@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // Letters: A–G, inclusive question range
 // Phases: setup → quiz → review; plus history & detail views
 
-const LETTERS = ["A", "B", "C", "D", "E", "F", "G"] as const;
+const LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
 type Letter = typeof LETTERS[number];
 
 // ---------- Storage helpers ----------
@@ -247,12 +247,13 @@ export default function MCQSimulator() {
             </Card>
 
             <Card className="p-6">
-              <div className="flex items-center justify-between">
-                <div className="text-sm tracking-wide text-neutral-400">Question</div>
-                <div className="text-lg font-semibold">{questionNumbers[currentIdx]}</div>
+              <div className="mb-4 flex items-center gap-4">
+                <div className="rounded bg-indigo-900 px-5 py-2 text-2xl font-extrabold text-white shadow">
+                  Question {questionNumbers[currentIdx]}
+                </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+             <div className="grid grid-flow-col auto-cols-fr gap-3 overflow-x-auto">
                 {LETTERS.map((L) => (
                   <ChoicePill key={L}
                     letter={L}
@@ -275,9 +276,9 @@ export default function MCQSimulator() {
               <div className="mt-6 flex items-center justify-between gap-3">
                 <div className="text-xs text-neutral-500">Time on this question: <span className="text-neutral-300 tabular-nums">{fmtTime(perQSec[currentIdx] ?? 0)}</span></div>
                 <div className="flex gap-2">
+                  <Button variant="primary" onClick={() => handleSubmit()}>Submit</Button>
                   <Button onClick={() => nav(-1)} disabled={currentIdx === 0}>Prev</Button>
                   <Button onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>Next</Button>
-                  <Button variant="primary" onClick={() => handleSubmit()}>Submit</Button>
                 </div>
               </div>
             </Card>
