@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // Letters: A–G, inclusive question range
 // Phases: setup → quiz → review; plus history & detail views
 
-const LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
+const LETTERS = ["A", "B", "C", "D", "E", "F", "G"] as const;
 type Letter = typeof LETTERS[number];
 
 // ---------- Storage helpers ----------
@@ -56,9 +56,6 @@ function upsertSession(session: SessionMeta) {
   saveStore(store);
 }
 
-function getSession(id: string) {
-  return loadStore().sessions.find((s) => s.id === id);
-}
 
 function removeSession(id: string) {
   const store = loadStore();
@@ -95,8 +92,7 @@ export default function MCQSimulator() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [endedAt, setEndedAt] = useState<number | null>(null);
   const [deadline, setDeadline] = useState<number | null>(null);
-  const [otherCache, setOtherCache] = useState<string>("");
-
+  
   const totalQuestions = Math.max(0, endNum - startNum + 1);
 
   // Track time on the active question
@@ -109,7 +105,7 @@ export default function MCQSimulator() {
       if (leftMs <= 0) {
         window.clearInterval(i);
         // auto submit
-        handleSubmit(true);
+        handleSubmit();
         return;
       }
       setPerQSec((prev) => {
@@ -122,11 +118,7 @@ export default function MCQSimulator() {
     return () => { if (tickRef.current) window.clearInterval(tickRef.current); };
   }, [view, deadline, currentIdx]);
 
-  // Persist other free-text as user types (per question)
-  useEffect(() => {
-    if (view !== "quiz") return;
-    setOtherCache(answers[currentIdx]?.other ?? "");
-  }, [currentIdx, view]);
+  
 
   const remainingSec = Math.max(0, deadline ? Math.ceil((deadline - now()) / 1000) : minutes * 60);
 
@@ -187,7 +179,7 @@ export default function MCQSimulator() {
 
   function jumpTo(idx: number) { setCurrentIdx(idx); }
 
-  function handleSubmit(fromTimeout = false) {
+  function handleSubmit() {
     if (!sessionId || startedAt == null) return;
     const t1 = now();
     const meta: SessionMeta = {
@@ -216,15 +208,14 @@ export default function MCQSimulator() {
 
   // History & detail
   const [detail, setDetail] = useState<SessionMeta | null>(null);
-  const sessions = loadStore().sessions;
-
+  
   // ---------- Derived ----------
   const questionNumbers = useMemo(() => Array.from({ length: totalQuestions }, (_, i) => startNum + i), [startNum, totalQuestions]);
 
   // ---------- UI ----------
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 antialiased selection:bg-neutral-800">
-      <TopBar view={view} onNavigate={setView} onOpenDetail={setDetail} />
+      <TopBar view={view} onNavigate={setView} />
 
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-8">
         {view === "setup" && (
@@ -256,14 +247,12 @@ export default function MCQSimulator() {
             </Card>
 
             <Card className="p-6">
-              <div className="mb-4 flex items-center gap-4">
-                <div className="rounded bg-indigo-900 px-5 py-2 text-2xl font-extrabold text-white shadow">
-                  Question {questionNumbers[currentIdx]}
-                </div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm tracking-wide text-neutral-400">Question</div>
+                <div className="text-lg font-semibold">{questionNumbers[currentIdx]}</div>
               </div>
 
-
-              <div className="grid grid-flow-col auto-cols-fr gap-3 overflow-x-auto">
+              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {LETTERS.map((L) => (
                   <ChoicePill key={L}
                     letter={L}
@@ -286,9 +275,9 @@ export default function MCQSimulator() {
               <div className="mt-6 flex items-center justify-between gap-3">
                 <div className="text-xs text-neutral-500">Time on this question: <span className="text-neutral-300 tabular-nums">{fmtTime(perQSec[currentIdx] ?? 0)}</span></div>
                 <div className="flex gap-2">
-                  <Button variant="primary" onClick={() => handleSubmit(false)}>Submit</Button>
                   <Button onClick={() => nav(-1)} disabled={currentIdx === 0}>Prev</Button>
                   <Button onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>Next</Button>
+                  <Button variant="primary" onClick={() => handleSubmit()}>Submit</Button>
                 </div>
               </div>
             </Card>
@@ -382,7 +371,7 @@ export default function MCQSimulator() {
 }
 
 // ---------- UI Building Blocks ----------
-function TopBar({ view, onNavigate, onOpenDetail }: { view: string; onNavigate: (v: any) => void; onOpenDetail: (s: SessionMeta | null) => void; }) {
+function TopBar({ view, onNavigate }: { view: string; onNavigate: (v: any) => void; }) {
   return (
     <header className="sticky top-0 z-10 border-b border-neutral-900/80 bg-neutral-950/70 backdrop-blur">
       <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
