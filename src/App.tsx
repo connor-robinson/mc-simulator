@@ -276,7 +276,7 @@ export default function MCQSimulator() {
               <div className="mt-6 flex items-center justify-between gap-3">
                 <div className="text-xs text-neutral-500">Time on this question: <span className="text-neutral-300 tabular-nums">{fmtTime(perQSec[currentIdx] ?? 0)}</span></div>
                 <div className="flex gap-2">
-                  <Button onClick={() => handleSubmit()}>Submit</Button>
+                  
                   <Button onClick={() => nav(-1)} disabled={currentIdx === 0}>Prev</Button>
                   <Button className="bg-indigo-900" onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>Next</Button>
                 </div>
@@ -297,6 +297,7 @@ export default function MCQSimulator() {
                   >{q}</button>
                 ))}
               </div>
+              <Button onClick={() => handleSubmit()}>Submit</Button>
             </Card>
           </div>
         )}
