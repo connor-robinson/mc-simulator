@@ -1,11 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /* MCQ Simulator — TSX, Tailwind (dark, minimalist)
-   New features:
-   - Guess flag per question (in Quiz & Review)
-   - Review/Marking: ✓/✗, Guess toggle, mistake tags
-   - Mistake donut + Time vs Question scatter (correctness color, guess shape/opacity)
-   - History opens a session directly in Review/Marking
+   Features:
+   - Setup → Quiz → Review/Marking → History
+   - Range inclusive, A–G choices, notes per question
+   - Guess toggle per question (Quiz & Review)
+   - Mark ✓/✗, tag mistake reasons
+   - Charts: mistake donut + time vs question scatter (color by correctness, hollow ring for guesses)
+   - Persistent sessions via localStorage
+   NEW:
+   - Session Notes (Review page): a big "what to improve" textarea; saved into the session.
+   - History: inline "📝 Notes" editor per session (view/edit/save) without opening the session.
 */
 
 const LETTERS = ["A", "B", "C", "D", "E", "F", "G"] as const;
@@ -25,6 +30,7 @@ type MistakeTag = typeof MISTAKE_OPTIONS[number];
 
 const LS_KEY = "mcqSessionsV1";
 
+/* ---------- Types & storage ---------- */
 type Answer = { choice: Letter | null; other: string };
 
 type SessionMeta = {
@@ -37,12 +43,11 @@ type SessionMeta = {
   minutes: number;
   perQuestionSec: number[];
   answers: Answer[];
-  // marking
-  correctFlags?: (boolean | null)[]; // true / false / null
-  guessedFlags?: boolean[];          // true / false
+  correctFlags?: (boolean | null)[];
+  guessedFlags?: boolean[];
   mistakeTags?: MistakeTag[];
   score?: { correct: number; total: number };
-  notes?: string;
+  notes?: string; // <— session-level notes
   version: 1;
 };
 
@@ -74,6 +79,7 @@ function removeSession(id: string) {
   saveStore(store);
 }
 
+/* ---------- Utils ---------- */
 const fmtTime = (sec: number) => {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
@@ -82,15 +88,19 @@ const fmtTime = (sec: number) => {
 const now = () => Date.now();
 const cx = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
 
+/* ---------- App ---------- */
 export default function App() {
   type View = "setup" | "quiz" | "review" | "history";
   const [view, setView] = useState<View>("setup");
 
-  // Setup
+  // Setup state
   const [sessionName, setSessionName] = useState("");
   const [startNum, setStartNum] = useState<number>(1);
   const [endNum, setEndNum] = useState<number>(20);
   const [minutes, setMinutes] = useState<number>(30);
+
+  // Session-level notes
+  const [sessionNotes, setSessionNotes] = useState<string>("");
 
   // Active/loaded session
   const [sessionId, setSessionId] = useState<string>("");
@@ -110,7 +120,7 @@ export default function App() {
     [correctFlags]
   );
 
-  // Timer: per-question + global
+  /* ----- Timer (per-question & global countdown) ----- */
   const tickRef = useRef<number | null>(null);
   useEffect(() => {
     if (view !== "quiz" || !deadline) return;
@@ -135,7 +145,9 @@ export default function App() {
 
   const remainingSec = Math.max(0, deadline ? Math.ceil((deadline - now()) / 1000) : minutes * 60);
 
+  /* ----- Actions ----- */
   function startQuiz() {
+    setSessionNotes(""); // reset notes for a fresh session
     if (Number.isNaN(startNum) || Number.isNaN(endNum) || startNum > endNum) {
       alert("Check your question range.");
       return;
@@ -166,6 +178,7 @@ export default function App() {
     setDeadline(t0 + minutes * 60 * 1000);
     setView("quiz");
 
+    // Create/seed in history
     upsertSession({
       id,
       name: sessionName.trim() || `Session ${new Date(t0).toLocaleString()}`,
@@ -178,6 +191,7 @@ export default function App() {
       correctFlags: initFlags,
       guessedFlags: initGuessed,
       mistakeTags: initTags,
+      notes: "", // <— new field
       version: 1,
     });
   }
@@ -228,6 +242,7 @@ export default function App() {
       guessedFlags,
       mistakeTags,
       score: { correct: correctFlags.filter((x) => x === true).length, total: totalQuestions },
+      notes: sessionNotes, // <— save notes on submit
       version: 1,
     };
     upsertSession(meta);
@@ -236,6 +251,7 @@ export default function App() {
     setView("review");
   }
 
+  // Load from history directly into Review/Marking
   function openForMarking(s: SessionMeta) {
     setSessionId(s.id);
     setSessionName(s.name);
@@ -251,6 +267,7 @@ export default function App() {
     setEndedAt(s.endedAt ?? null);
     setDeadline(null);
     setCurrentIdx(0);
+    setSessionNotes(s.notes ?? ""); // <— restore notes for editing
     setView("review");
   }
 
@@ -259,11 +276,13 @@ export default function App() {
     [startNum, totalQuestions]
   );
 
+  /* ---------- UI ---------- */
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 antialiased selection:bg-neutral-800">
       <TopBar view={view} onNavigate={(v) => setView(v)} quizLocked={view === "quiz"} />
 
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-8">
+        {/* SETUP */}
         {view === "setup" && (
           <Card className="p-6">
             <h1 className="text-2xl font-semibold tracking-tight">MCQ Session Setup</h1>
@@ -280,14 +299,13 @@ export default function App() {
               </div>
               <div className="flex gap-2">
                 <Button onClick={() => setView("history")}>View history</Button>
-                <Button variant="primary" onClick={startQuiz}>
-                  Start
-                </Button>
+                <Button variant="primary" onClick={startQuiz}>Start</Button>
               </div>
             </div>
           </Card>
         )}
 
+        {/* QUIZ */}
         {view === "quiz" && (
           <div className="space-y-6">
             <Card className="p-5 flex items-center justify-between">
@@ -298,17 +316,15 @@ export default function App() {
 
             <Card className="p-6">
               <div className="mb-4 flex items-center gap-4">
-              <div className="mb-4 flex items-center gap-4">
                 <div className="rounded bg-indigo-900 px-5 py-2 text-2xl font-extrabold text-white shadow">
                   Question {questionNumbers[currentIdx]}
                 </div>
-              </div>
                 <button
                   className={cx(
                     "rounded px-2 py-1 text-xs transition",
                     guessedFlags[currentIdx]
-                      ? "bg-indigo-500 text-neutral-200 ring-indigo-300"
-                      : "bg-neutral-950 text-neutral-200 hover:bg-neutral-900"
+                      ? "bg-indigo-500 text-neutral-100 ring-1 ring-indigo-300"
+                      : "bg-neutral-950 text-neutral-200 hover:bg-neutral-900 ring-1 ring-neutral-800"
                   )}
                   onClick={() => toggleGuess(currentIdx)}
                   title="Toggle guess"
@@ -316,6 +332,7 @@ export default function App() {
                   Guess?
                 </button>
               </div>
+
               <div className="grid grid-flow-col auto-cols-fr gap-3 overflow-x-auto">
                 {LETTERS.map((L) => (
                   <ChoicePill
@@ -327,32 +344,24 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="mt-4 flex items-center justify-between">
+              <div className="mt-4">
                 <label className="text-sm text-neutral-400">Other / notes</label>
-                
+                <input
+                  value={answers[currentIdx]?.other ?? ""}
+                  onChange={(e) => setOther(currentIdx, e.target.value)}
+                  placeholder="Type anything (e.g., 'unsure between C/D')"
+                  className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
+                />
               </div>
-              <input
-                value={answers[currentIdx]?.other ?? ""}
-                onChange={(e) => setOther(currentIdx, e.target.value)}
-                placeholder="Type anything (e.g., 'unsure between C/D')"
-                className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
-              />
 
               <div className="mt-6 flex items-center justify-between gap-3">
                 <div className="text-xs text-neutral-500">
-                  Time on this question:{" "}
-                  <span className="text-neutral-300 tabular-nums">{fmtTime(perQSec[currentIdx] ?? 0)}</span>
+                  Time on this question: <span className="text-neutral-300 tabular-nums">{fmtTime(perQSec[currentIdx] ?? 0)}</span>
                 </div>
                 <div className="flex gap-2">
-                  <Button onClick={() => handleSubmit()}>
-                    Submit
-                  </Button>
-                  <Button onClick={() => nav(-1)} disabled={currentIdx === 0}>
-                    Prev
-                  </Button>
-                  <Button className="bg-indigo-900" onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>
-                    Next
-                  </Button>
+                  <Button onClick={() => nav(-1)} disabled={currentIdx === 0}>Prev</Button>
+                  <Button className="bg-indigo-900" onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>Next</Button>
+                  <Button variant="primary" onClick={() => handleSubmit()}>Submit</Button>
                 </div>
               </div>
             </Card>
@@ -382,6 +391,7 @@ export default function App() {
           </div>
         )}
 
+        {/* REVIEW / MARKING */}
         {view === "review" && (
           <div className="space-y-6">
             <HeaderBlock
@@ -522,6 +532,22 @@ export default function App() {
                 ))}
               </div>
 
+              {/* Session Notes / what to improve */}
+              <Card className="p-4 mt-6">
+                <div className="mb-2 text-sm text-neutral-400">Session Notes / what to improve</div>
+                <textarea
+                  rows={5}
+                  placeholder="e.g., Review SUVAT steps; practice equation setup for projectiles; double-check units."
+                  value={sessionNotes}
+                  onChange={(e) => setSessionNotes(e.target.value)}
+                  className="w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
+                />
+                <div className="mt-2 text-xs text-neutral-500">
+                  Notes are saved with this session when you submit or press “Save to history”.
+                </div>
+              </Card>
+
+              {/* Charts */}
               <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
                 <MistakeChart tags={mistakeTags} />
                 <TimeCorrectScatter
@@ -553,6 +579,7 @@ export default function App() {
                       guessedFlags,
                       mistakeTags,
                       score: { correct: correctFlags.filter((x) => x === true).length, total: totalQuestions },
+                      notes: sessionNotes, // <— save notes
                       version: 1,
                     });
                     setView("history");
@@ -565,14 +592,14 @@ export default function App() {
           </div>
         )}
 
+        {/* HISTORY (with inline notes editor) */}
         {view === "history" && (
           <HistoryView
             onOpen={(s) => openForMarking(s)}
             onDelete={(id) => {
               removeSession(id);
-              // refresh by toggling
-              setView("setup");
-              setView("history");
+              // force refresh by toggling
+              setView("setup"); setView("history");
             }}
           />
         )}
@@ -584,7 +611,6 @@ export default function App() {
 }
 
 /* ---------- UI primitives ---------- */
-
 function TopBar({
   view,
   onNavigate,
@@ -625,7 +651,6 @@ function TopBar({
     </header>
   );
 }
-
 function Card({ className, children }: React.PropsWithChildren<{ className?: string }>) {
   return <div className={cx("rounded-2xl border border-neutral-900 bg-neutral-950", className)}>{children}</div>;
 }
@@ -777,10 +802,7 @@ function MistakeChart({ tags }: { tags: MistakeTag[] }) {
       <div className="grid grid-cols-1 gap-1 text-xs">
         {entries.map((e, i) => (
           <div key={e.key} className="flex items-center gap-2">
-            <span
-              className="inline-block h-2 w-2 rounded-sm"
-              style={{ background: i % 2 ? "#10b981" : "#f43f5e" }}
-            />
+            <span className="inline-block h-2 w-2 rounded-sm" style={{ background: i % 2 ? "#10b981" : "#f43f5e" }} />
             <span className="text-neutral-300">{e.key}</span>
             <span className="text-neutral-500 tabular-nums">{e.value}</span>
           </div>
@@ -790,12 +812,7 @@ function MistakeChart({ tags }: { tags: MistakeTag[] }) {
   );
 }
 
-/* ------- Time vs Question scatter (pure SVG) -------
-   x: question number
-   y: seconds spent (linear)
-   color: green=correct, red=wrong, gray=unmarked
-   shape/opacity: guessed = hollow ring (or higher opacity), not guessed = filled
-*/
+/* ------- Time vs Question scatter (pure SVG) ------- */
 function TimeCorrectScatter({
   startNum,
   perQSec,
@@ -815,8 +832,7 @@ function TimeCorrectScatter({
   const maxX = startNum + N - 1;
   const maxY = Math.max(10, ...perQSec, 0);
 
-  const xScale = (qIdx: number) =>
-    PAD + ((qIdx - startNum) / Math.max(1, maxX - startNum)) * (W - 2 * PAD);
+  const xScale = (q: number) => PAD + ((q - startNum) / Math.max(1, maxX - startNum)) * (W - 2 * PAD);
   const yScale = (sec: number) => H - PAD - (sec / maxY) * (H - 2 * PAD);
 
   const points = Array.from({ length: N }, (_, i) => {
@@ -885,7 +901,7 @@ function TimeCorrectScatter({
   );
 }
 
-/* ------- History (opens Review/Marking) ------- */
+/* ------- History (inline notes editor) ------- */
 function HistoryView({
   onOpen,
   onDelete,
@@ -893,7 +909,28 @@ function HistoryView({
   onOpen: (s: SessionMeta) => void;
   onDelete: (id: string) => void;
 }) {
-  const sessions = loadStore().sessions;
+  const [sessions, setSessions] = useState<SessionMeta[]>(() => loadStore().sessions);
+  const [openNotesId, setOpenNotesId] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
+  // refresh when history likely changes
+  useEffect(() => {
+    setSessions(loadStore().sessions);
+  }, []);
+
+  function toggleNotes(s: SessionMeta) {
+    const nextOpen = openNotesId === s.id ? null : s.id;
+    setOpenNotesId(nextOpen);
+    setDrafts((d) => ({ ...d, [s.id]: d[s.id] ?? (s.notes ?? "") }));
+  }
+
+  function saveNotes(s: SessionMeta) {
+    const text = drafts[s.id] ?? "";
+    const updated = { ...s, notes: text };
+    upsertSession(updated);
+    setSessions(loadStore().sessions);
+  }
+
   if (sessions.length === 0) {
     return (
       <Card className="p-8 text-center text-neutral-400">
@@ -903,7 +940,7 @@ function HistoryView({
   }
   return (
     <div className="space-y-4">
-      <HeaderBlock title="History" subtitle="Open a session to continue marking or editing." />
+      <HeaderBlock title="History" subtitle="Open a session to mark — or edit notes inline with 📝." />
       {sessions.map((s) => (
         <Card key={s.id} className="p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -917,16 +954,36 @@ function HistoryView({
               <div className="rounded-full bg-neutral-900 px-3 py-1 text-xs">
                 {s.score ? `Score: ${s.score.correct}/${s.score.total}` : "No score"}
               </div>
-              <Button onClick={() => onOpen(s)}>Mark</Button>
+              {s.notes && (
+                <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-300">📝</span>
+              )}
+              <Button onClick={() => toggleNotes(s)}>Notes</Button>
+              <Button onClick={() => onOpen(s)}>Open</Button>
               <Button onClick={() => onDelete(s.id)}>Delete</Button>
             </div>
           </div>
+
+          {/* Inline notes editor */}
+          {openNotesId === s.id && (
+            <div className="mt-3 rounded-xl border border-neutral-900 bg-neutral-950 p-3">
+              <div className="mb-2 text-xs text-neutral-400">Session Notes / what to improve</div>
+              <textarea
+                rows={4}
+                value={drafts[s.id] ?? ""}
+                onChange={(e) => setDrafts((d) => ({ ...d, [s.id]: e.target.value }))}
+                className="w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
+                placeholder="Set actionable goals. E.g., 'slow down on algebra; practice momentum problems set B; memorize capacitor formulas'."
+              />
+              <div className="mt-2 flex justify-end gap-2">
+                <Button onClick={() => setOpenNotesId(null)}>Close</Button>
+                <Button variant="primary" onClick={() => saveNotes(s)}>Save Notes</Button>
+              </div>
+            </div>
+          )}
         </Card>
       ))}
     </div>
   );
 }
 
-/* ----------------- */
-
-
+/* ---------- END ---------- */
