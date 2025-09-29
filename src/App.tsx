@@ -359,9 +359,10 @@ export default function App() {
                   Time on this question: <span className="text-neutral-300 tabular-nums">{fmtTime(perQSec[currentIdx] ?? 0)}</span>
                 </div>
                 <div className="flex gap-2">
+                  <Button onClick={() => handleSubmit()}>Submit</Button>
+
                   <Button onClick={() => nav(-1)} disabled={currentIdx === 0}>Prev</Button>
-                  <Button className="bg-indigo-900" onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>Next</Button>
-                  <Button variant="primary" onClick={() => handleSubmit()}>Submit</Button>
+                  <Button variant="primary" onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>Next</Button>
                 </div>
               </div>
             </Card>
