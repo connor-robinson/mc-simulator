@@ -1,15 +1,28 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// Minimalist MCQ Simulator — single-file React component
-// Styling: TailwindCSS (neutral/dark minimalist), no external state libs
-// Storage: localStorage (sessions, answers, timings)
-// Letters: A–G, inclusive question range
-// Phases: setup → quiz → review; plus history & detail views
+/* MCQ Simulator — TSX, Tailwind (dark, minimalist)
+   New features:
+   - Guess flag per question (in Quiz & Review)
+   - Review/Marking: ✓/✗, Guess toggle, mistake tags
+   - Mistake donut + Time vs Question scatter (correctness color, guess shape/opacity)
+   - History opens a session directly in Review/Marking
+*/
 
-const LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
+const LETTERS = ["A", "B", "C", "D", "E", "F", "G"] as const;
 type Letter = typeof LETTERS[number];
 
-// ---------- Storage helpers ----------
+const MISTAKE_OPTIONS = [
+  "None",
+  "Calc / algebra mistakes",
+  "Failed to spot setup",
+  "Understanding",
+  "Formula recall",
+  "Diagrams",
+  "Poor Time management",
+  "Other",
+] as const;
+type MistakeTag = typeof MISTAKE_OPTIONS[number];
+
 const LS_KEY = "mcqSessionsV1";
 
 type Answer = { choice: Letter | null; other: string };
@@ -19,165 +32,184 @@ type SessionMeta = {
   name: string;
   startNum: number;
   endNum: number;
-  startedAt: number; // epoch ms
-  endedAt?: number; // epoch ms (when submitted/timeout)
-  minutes: number; // planned duration
-  perQuestionSec: number[]; // length N
-  answers: Answer[]; // length N
+  startedAt: number;
+  endedAt?: number;
+  minutes: number;
+  perQuestionSec: number[];
+  answers: Answer[];
+  // marking
+  correctFlags?: (boolean | null)[]; // true / false / null
+  guessedFlags?: boolean[];          // true / false
+  mistakeTags?: MistakeTag[];
   score?: { correct: number; total: number };
   notes?: string;
   version: 1;
 };
 
-type Store = {
-  sessions: SessionMeta[];
-};
+type Store = { sessions: SessionMeta[] };
 
 function loadStore(): Store {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return { sessions: [] };
-    const parsed = JSON.parse(raw) as Store;
-    if (!Array.isArray(parsed.sessions)) return { sessions: [] };
-    return parsed;
+    const obj = JSON.parse(raw) as Store;
+    return Array.isArray(obj.sessions) ? obj : { sessions: [] };
   } catch {
     return { sessions: [] };
   }
 }
-
 function saveStore(store: Store) {
   localStorage.setItem(LS_KEY, JSON.stringify(store));
 }
-
-function upsertSession(session: SessionMeta) {
+function upsertSession(s: SessionMeta) {
   const store = loadStore();
-  const idx = store.sessions.findIndex((s) => s.id === session.id);
-  if (idx >= 0) store.sessions[idx] = session; else store.sessions.unshift(session);
+  const i = store.sessions.findIndex((x) => x.id === s.id);
+  if (i >= 0) store.sessions[i] = s;
+  else store.sessions.unshift(s);
   saveStore(store);
 }
-
-
 function removeSession(id: string) {
   const store = loadStore();
   store.sessions = store.sessions.filter((s) => s.id !== id);
   saveStore(store);
 }
 
-// ---------- Utilities ----------
 const fmtTime = (sec: number) => {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 };
-
 const now = () => Date.now();
+const cx = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
 
-function classNames(...xs: (string | false | null | undefined)[]) {
-  return xs.filter(Boolean).join(" ");
-}
+export default function App() {
+  type View = "setup" | "quiz" | "review" | "history";
+  const [view, setView] = useState<View>("setup");
 
-// ---------- Core Component ----------
-export default function MCQSimulator() {
-  const [view, setView] = useState<"setup" | "quiz" | "review" | "history" | "detail">("setup");
+  // Setup
   const [sessionName, setSessionName] = useState("");
   const [startNum, setStartNum] = useState<number>(1);
   const [endNum, setEndNum] = useState<number>(20);
   const [minutes, setMinutes] = useState<number>(30);
 
-  // Live quiz state
+  // Active/loaded session
   const [sessionId, setSessionId] = useState<string>("");
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [perQSec, setPerQSec] = useState<number[]>([]);
+  const [correctFlags, setCorrectFlags] = useState<(boolean | null)[]>([]);
+  const [guessedFlags, setGuessedFlags] = useState<boolean[]>([]);
+  const [mistakeTags, setMistakeTags] = useState<MistakeTag[]>([]);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [endedAt, setEndedAt] = useState<number | null>(null);
   const [deadline, setDeadline] = useState<number | null>(null);
-  
-  const totalQuestions = Math.max(0, endNum - startNum + 1);
 
-  // Track time on the active question
+  const totalQuestions = Math.max(0, endNum - startNum + 1);
+  const correctCount = useMemo(
+    () => correctFlags.filter((x) => x === true).length,
+    [correctFlags]
+  );
+
+  // Timer: per-question + global
   const tickRef = useRef<number | null>(null);
   useEffect(() => {
-    if (view !== "quiz") return;
-    if (!deadline) return;
+    if (view !== "quiz" || !deadline) return;
     const i = window.setInterval(() => {
-      const leftMs = Math.max(0, deadline - now());
-      if (leftMs <= 0) {
+      const left = Math.max(0, deadline - now());
+      if (left <= 0) {
         window.clearInterval(i);
-        // auto submit
         handleSubmit();
         return;
       }
       setPerQSec((prev) => {
-        const copy = prev.slice();
-        copy[currentIdx] = (copy[currentIdx] ?? 0) + 1; // add 1s to current question
-        return copy;
+        const a = prev.slice();
+        a[currentIdx] = (a[currentIdx] ?? 0) + 1;
+        return a;
       });
     }, 1000);
     tickRef.current = i;
-    return () => { if (tickRef.current) window.clearInterval(tickRef.current); };
+    return () => {
+      if (tickRef.current) window.clearInterval(tickRef.current);
+    };
   }, [view, deadline, currentIdx]);
-
-  
 
   const remainingSec = Math.max(0, deadline ? Math.ceil((deadline - now()) / 1000) : minutes * 60);
 
-  // ---------- Handlers ----------
   function startQuiz() {
-    if (Number.isNaN(startNum) || Number.isNaN(endNum) || startNum > endNum) return alert("Check your question range.");
-    if (minutes <= 0) return alert("Timer must be positive.");
-
+    if (Number.isNaN(startNum) || Number.isNaN(endNum) || startNum > endNum) {
+      alert("Check your question range.");
+      return;
+    }
+    if (minutes <= 0) {
+      alert("Timer must be positive.");
+      return;
+    }
     const N = endNum - startNum + 1;
-    const initAnswers: Answer[] = Array.from({ length: N }, () => ({ choice: null, other: "" }));
-    const initPerQ = Array.from({ length: N }, () => 0);
+    const initAnswers = Array.from({ length: N }, () => ({ choice: null, other: "" } as Answer));
+    const initTimes = Array.from({ length: N }, () => 0);
+    const initFlags = Array.from({ length: N }, () => null as boolean | null);
+    const initGuessed = Array.from({ length: N }, () => false);
+    const initTags = Array.from({ length: N }, () => "None" as MistakeTag);
 
     const id = crypto.randomUUID();
+    const t0 = now();
+
     setSessionId(id);
     setAnswers(initAnswers);
-    setPerQSec(initPerQ);
+    setPerQSec(initTimes);
+    setCorrectFlags(initFlags);
+    setGuessedFlags(initGuessed);
+    setMistakeTags(initTags);
     setCurrentIdx(0);
-    const t0 = now();
     setStartedAt(t0);
     setEndedAt(null);
     setDeadline(t0 + minutes * 60 * 1000);
     setView("quiz");
 
-    // Create placeholder session immediately (so it's in history even if timeout closes page)
-    const meta: SessionMeta = {
+    upsertSession({
       id,
       name: sessionName.trim() || `Session ${new Date(t0).toLocaleString()}`,
       startNum,
       endNum,
       startedAt: t0,
       minutes,
-      perQuestionSec: initPerQ,
+      perQuestionSec: initTimes,
       answers: initAnswers,
+      correctFlags: initFlags,
+      guessedFlags: initGuessed,
+      mistakeTags: initTags,
       version: 1,
-    };
-    upsertSession(meta);
+    });
   }
 
   function setChoice(idx: number, letter: Letter) {
     setAnswers((prev) => {
-      const next = prev.slice();
-      next[idx] = { ...next[idx], choice: letter };
-      return next;
+      const a = prev.slice();
+      a[idx] = { ...a[idx], choice: letter };
+      return a;
     });
   }
-
   function setOther(idx: number, text: string) {
     setAnswers((prev) => {
-      const next = prev.slice();
-      next[idx] = { ...next[idx], other: text };
-      return next;
+      const a = prev.slice();
+      a[idx] = { ...a[idx], other: text };
+      return a;
+    });
+  }
+  function toggleGuess(idx: number) {
+    setGuessedFlags((prev) => {
+      const a = prev.slice();
+      a[idx] = !a[idx];
+      return a;
     });
   }
 
-  function nav(delta: number) {
-    setCurrentIdx((i) => Math.min(Math.max(0, i + delta), totalQuestions - 1));
+  function nav(d: number) {
+    setCurrentIdx((i) => Math.min(Math.max(0, i + d), totalQuestions - 1));
   }
-
-  function jumpTo(idx: number) { setCurrentIdx(idx); }
+  function jumpTo(i: number) {
+    setCurrentIdx(i);
+  }
 
   function handleSubmit() {
     if (!sessionId || startedAt == null) return;
@@ -192,6 +224,10 @@ export default function MCQSimulator() {
       minutes,
       perQuestionSec: perQSec,
       answers,
+      correctFlags,
+      guessedFlags,
+      mistakeTags,
+      score: { correct: correctFlags.filter((x) => x === true).length, total: totalQuestions },
       version: 1,
     };
     upsertSession(meta);
@@ -200,22 +236,32 @@ export default function MCQSimulator() {
     setView("review");
   }
 
-  function updateScore(session: SessionMeta, correct: number) {
-    const updated = { ...session, score: { correct, total: session.endNum - session.startNum + 1 } };
-    upsertSession(updated);
-    if (detail && detail.id === session.id) setDetail(updated);
+  function openForMarking(s: SessionMeta) {
+    setSessionId(s.id);
+    setSessionName(s.name);
+    setStartNum(s.startNum);
+    setEndNum(s.endNum);
+    setMinutes(s.minutes);
+    setAnswers(s.answers.slice());
+    setPerQSec(s.perQuestionSec.slice());
+    setCorrectFlags((s.correctFlags ?? Array.from({ length: s.answers.length }, () => null)).slice());
+    setGuessedFlags((s.guessedFlags ?? Array.from({ length: s.answers.length }, () => false)).slice());
+    setMistakeTags((s.mistakeTags ?? Array.from({ length: s.answers.length }, () => "None" as MistakeTag)).slice());
+    setStartedAt(s.startedAt);
+    setEndedAt(s.endedAt ?? null);
+    setDeadline(null);
+    setCurrentIdx(0);
+    setView("review");
   }
 
-  // History & detail
-  const [detail, setDetail] = useState<SessionMeta | null>(null);
-  
-  // ---------- Derived ----------
-  const questionNumbers = useMemo(() => Array.from({ length: totalQuestions }, (_, i) => startNum + i), [startNum, totalQuestions]);
+  const questionNumbers = useMemo(
+    () => Array.from({ length: totalQuestions }, (_, i) => startNum + i),
+    [startNum, totalQuestions]
+  );
 
-  // ---------- UI ----------
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 antialiased selection:bg-neutral-800">
-      <TopBar view={view} onNavigate={setView} />
+      <TopBar view={view} onNavigate={(v) => setView(v)} quizLocked={view === "quiz"} />
 
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-8">
         {view === "setup" && (
@@ -223,16 +269,20 @@ export default function MCQSimulator() {
             <h1 className="text-2xl font-semibold tracking-tight">MCQ Session Setup</h1>
             <p className="mt-1 text-sm text-neutral-400">Minimalist, keyboard-friendly, and fast.</p>
             <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <LabeledInput label="Session name (optional)" placeholder="e.g. ESAT M1 Set A" value={sessionName} onChange={setSessionName} />
-              <LabeledNumber label="Timer (minutes)" min={1} value={minutes} onChange={setMinutes} />
-              <LabeledNumber label="Start question #" min={-9999} value={startNum} onChange={setStartNum} />
-              <LabeledNumber label="End question # (inclusive)" min={-9999} value={endNum} onChange={setEndNum} />
+              <LabeledInput label="Session name (optional)" value={sessionName} onChange={setSessionName} placeholder="e.g. ESAT M1 Set A" />
+              <LabeledNumber label="Timer (minutes)" value={minutes} onChange={setMinutes} min={1} />
+              <LabeledNumber label="Start question #" value={startNum} onChange={setStartNum} />
+              <LabeledNumber label="End question # (inclusive)" value={endNum} onChange={setEndNum} />
             </div>
             <div className="mt-6 flex items-center justify-between gap-3">
-              <div className="text-xs text-neutral-400">Range size: <span className="text-neutral-200 font-medium">{totalQuestions}</span></div>
+              <div className="text-xs text-neutral-400">
+                Range size: <span className="text-neutral-200 font-medium">{totalQuestions}</span>
+              </div>
               <div className="flex gap-2">
-                <Button onClick={() => { setView("history"); }}>View history</Button>
-                <Button variant="primary" onClick={startQuiz}>Start</Button>
+                <Button onClick={() => setView("history")}>View history</Button>
+                <Button variant="primary" onClick={startQuiz}>
+                  Start
+                </Button>
               </div>
             </div>
           </Card>
@@ -248,14 +298,28 @@ export default function MCQSimulator() {
 
             <Card className="p-6">
               <div className="mb-4 flex items-center gap-4">
+              <div className="mb-4 flex items-center gap-4">
                 <div className="rounded bg-indigo-900 px-5 py-2 text-2xl font-extrabold text-white shadow">
                   Question {questionNumbers[currentIdx]}
                 </div>
               </div>
-
-             <div className="grid grid-flow-col auto-cols-fr gap-3 overflow-x-auto">
+                <button
+                  className={cx(
+                    "rounded px-2 py-1 text-xs transition",
+                    guessedFlags[currentIdx]
+                      ? "bg-indigo-500 text-neutral-200 ring-indigo-300"
+                      : "bg-neutral-950 text-neutral-200 hover:bg-neutral-900"
+                  )}
+                  onClick={() => toggleGuess(currentIdx)}
+                  title="Toggle guess"
+                >
+                  Guess?
+                </button>
+              </div>
+              <div className="grid grid-flow-col auto-cols-fr gap-3 overflow-x-auto">
                 {LETTERS.map((L) => (
-                  <ChoicePill key={L}
+                  <ChoicePill
+                    key={L}
                     letter={L}
                     selected={answers[currentIdx]?.choice === L}
                     onClick={() => setChoice(currentIdx, L)}
@@ -263,106 +327,253 @@ export default function MCQSimulator() {
                 ))}
               </div>
 
-              <div className="mt-5">
+              <div className="mt-4 flex items-center justify-between">
                 <label className="text-sm text-neutral-400">Other / notes</label>
-                <input
-                  value={answers[currentIdx]?.other ?? ""}
-                  onChange={(e) => setOther(currentIdx, e.target.value)}
-                  placeholder="Type anything (e.g., 'unsure between C/D')"
-                  className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
-                />
+                
               </div>
+              <input
+                value={answers[currentIdx]?.other ?? ""}
+                onChange={(e) => setOther(currentIdx, e.target.value)}
+                placeholder="Type anything (e.g., 'unsure between C/D')"
+                className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
+              />
 
               <div className="mt-6 flex items-center justify-between gap-3">
-                <div className="text-xs text-neutral-500">Time on this question: <span className="text-neutral-300 tabular-nums">{fmtTime(perQSec[currentIdx] ?? 0)}</span></div>
+                <div className="text-xs text-neutral-500">
+                  Time on this question:{" "}
+                  <span className="text-neutral-300 tabular-nums">{fmtTime(perQSec[currentIdx] ?? 0)}</span>
+                </div>
                 <div className="flex gap-2">
-                  
-                  <Button onClick={() => nav(-1)} disabled={currentIdx === 0}>Prev</Button>
-                  <Button className="bg-indigo-900" onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>Next</Button>
+                  <Button onClick={() => handleSubmit()}>
+                    Submit
+                  </Button>
+                  <Button onClick={() => nav(-1)} disabled={currentIdx === 0}>
+                    Prev
+                  </Button>
+                  <Button className="bg-indigo-900" onClick={() => nav(+1)} disabled={currentIdx === totalQuestions - 1}>
+                    Next
+                  </Button>
                 </div>
               </div>
             </Card>
 
             <Card className="p-5">
               <div className="mb-3 text-sm text-neutral-400">Quick jump</div>
-              <div className="grid grid-cols-6 gap-2 sm:grid-cols-10 md:grid-cols-14">
+              <div className="grid grid-cols-6 gap-2 sm:grid-cols-10">
                 {questionNumbers.map((q, i) => (
-                  <button key={q}
+                  <button
+                    key={q}
                     onClick={() => jumpTo(i)}
-                    className={classNames(
+                    className={cx(
                       "rounded-lg px-2 py-2 text-sm tabular-nums ring-1",
-                      currentIdx === i ? "bg-neutral-100 text-neutral-900 ring-neutral-200" : answers[i]?.choice ? "bg-neutral-900 ring-neutral-800" : "bg-neutral-950 ring-neutral-900 hover:bg-neutral-900"
+                      currentIdx === i
+                        ? "bg-neutral-100 text-neutral-900 ring-neutral-200"
+                        : answers[i]?.choice
+                        ? "bg-neutral-900 ring-neutral-800"
+                        : "bg-neutral-950 ring-neutral-900 hover:bg-neutral-900"
                     )}
                     title={`Q${q}`}
-                  >{q}</button>
+                  >
+                    {q}
+                  </button>
                 ))}
               </div>
-              <Button onClick={() => handleSubmit()}>Submit</Button>
             </Card>
           </div>
         )}
 
         {view === "review" && (
           <div className="space-y-6">
-            <HeaderBlock title="Review & Edit" subtitle="Compact summary. Click to change any answer." />
+            <HeaderBlock
+              title="Review & Mark"
+              subtitle="Toggle notes (?), mark ✓/✗, flag guesses, tag mistakes. Score updates automatically."
+            />
             <Card className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-sm text-neutral-400">Auto score</div>
+                <div className="rounded-full bg-neutral-900 px-3 py-1 text-xs">
+                  {correctCount}/{totalQuestions}
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
                 {questionNumbers.map((q, i) => (
-                  <div key={q} className="flex items-center justify-between rounded-xl bg-neutral-900/50 p-3">
-                    <div className="text-sm"><span className="text-neutral-400">{q}.</span> <span className="font-medium">{answers[i]?.choice ?? "—"}</span></div>
-                    <div className="flex items-center gap-2">
+                  <div key={q} className="rounded-xl bg-neutral-900/50 p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm">
+                        <span className="text-neutral-400">{q}.</span>{" "}
+                        <span className="font-medium">{answers[i]?.choice ?? "—"}</span>
+                        {guessedFlags[i] && (
+                          <span className="ml-2 rounded-sm bg-amber-400/90 px-1.5 py-0.5 text-[10px] font-medium text-neutral-900">
+                            guess
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-neutral-500 tabular-nums">{fmtTime(perQSec[i] ?? 0)}</div>
+                    </div>
+
+                    <div className="mt-2 flex items-center justify-between gap-2">
                       <div className="flex overflow-hidden rounded-lg ring-1 ring-neutral-800">
                         {LETTERS.map((L) => (
-                          <button key={L}
-                            className={classNames(
+                          <button
+                            key={L}
+                            className={cx(
                               "px-2 py-1 text-xs",
                               answers[i]?.choice === L ? "bg-neutral-100 text-neutral-900" : "hover:bg-neutral-800"
                             )}
                             onClick={() => setChoice(i, L)}
-                          >{L}</button>
+                          >
+                            {L}
+                          </button>
                         ))}
                       </div>
+
+                      <div className="flex gap-1">
+                        <button
+                          className={cx(
+                            "px-2 py-1 text-xs rounded-md ring-1",
+                            correctFlags[i] === true
+                              ? "bg-emerald-500/90 text-neutral-900 ring-emerald-400"
+                              : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                          )}
+                          title="Mark correct"
+                          onClick={() =>
+                            setCorrectFlags((prev) => {
+                              const a = prev.slice();
+                              a[i] = true;
+                              return a;
+                            })
+                          }
+                        >
+                          ✓
+                        </button>
+                        <button
+                          className={cx(
+                            "px-2 py-1 text-xs rounded-md ring-1",
+                            correctFlags[i] === false
+                              ? "bg-rose-500/90 text-neutral-900 ring-rose-400"
+                              : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                          )}
+                          title="Mark wrong"
+                          onClick={() =>
+                            setCorrectFlags((prev) => {
+                              const a = prev.slice();
+                              a[i] = false;
+                              return a;
+                            })
+                          }
+                        >
+                          ✗
+                        </button>
+                        <button
+                          className={cx(
+                            "px-2 py-1 text-xs rounded-md ring-1",
+                            guessedFlags[i]
+                              ? "bg-amber-400/90 text-neutral-900 ring-amber-300"
+                              : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                          )}
+                          title="Toggle guess"
+                          onClick={() => toggleGuess(i)}
+                        >
+                          ?
+                        </button>
+                        {answers[i]?.other && (
+                          <button
+                            className="px-2 py-1 text-xs rounded-md ring-1 bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                            title="Show notes"
+                            onClick={(e) => {
+                              const el = e.currentTarget.parentElement?.parentElement?.nextElementSibling as HTMLDivElement | null;
+                              if (el) el.classList.toggle("hidden");
+                            }}
+                          >
+                            note
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {answers[i]?.other && (
+                      <div className="hidden mt-2 rounded-lg bg-neutral-950/70 p-2 text-xs text-neutral-300 ring-1 ring-neutral-900">
+                        {answers[i]?.other}
+                      </div>
+                    )}
+
+                    <div className="mt-2">
+                      <select
+                        className="w-full rounded-lg bg-neutral-950 px-2 py-1 text-xs ring-1 ring-neutral-800 hover:bg-neutral-900"
+                        value={mistakeTags[i] ?? "None"}
+                        onChange={(e) => {
+                          const v = e.target.value as MistakeTag;
+                          setMistakeTags((prev) => {
+                            const a = prev.slice();
+                            a[i] = v;
+                            return a;
+                          });
+                        }}
+                      >
+                        {MISTAKE_OPTIONS.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 ))}
               </div>
+
+              <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
+                <MistakeChart tags={mistakeTags} />
+                <TimeCorrectScatter
+                  startNum={startNum}
+                  perQSec={perQSec}
+                  correctFlags={correctFlags}
+                  guessedFlags={guessedFlags}
+                />
+              </div>
+
               <div className="mt-4 text-right">
                 <Button onClick={() => setView("setup")}>New session</Button>
-                <Button variant="primary" className="ml-2" onClick={() => {
-                  // persist the latest edits
-                  if (!sessionId || startedAt == null) return;
-                  const meta: SessionMeta = {
-                    id: sessionId,
-                    name: sessionName.trim() || `Session ${new Date(startedAt).toLocaleString()}`,
-                    startNum,
-                    endNum,
-                    startedAt,
-                    endedAt: endedAt ?? now(),
-                    minutes,
-                    perQuestionSec: perQSec,
-                    answers,
-                    version: 1,
-                  };
-                  upsertSession(meta);
-                  setView("history");
-                }}>Save to history</Button>
+                <Button
+                  variant="primary"
+                  className="ml-2"
+                  onClick={() => {
+                    if (!sessionId || startedAt == null) return;
+                    upsertSession({
+                      id: sessionId,
+                      name: sessionName.trim() || `Session ${new Date(startedAt).toLocaleString()}`,
+                      startNum,
+                      endNum,
+                      startedAt,
+                      endedAt: endedAt ?? now(),
+                      minutes,
+                      perQuestionSec: perQSec,
+                      answers,
+                      correctFlags,
+                      guessedFlags,
+                      mistakeTags,
+                      score: { correct: correctFlags.filter((x) => x === true).length, total: totalQuestions },
+                      version: 1,
+                    });
+                    setView("history");
+                  }}
+                >
+                  Save to history
+                </Button>
               </div>
             </Card>
           </div>
         )}
 
         {view === "history" && (
-          <HistoryView onOpen={(s) => { setDetail(s); setView("detail"); }} />
-        )}
-
-        {view === "detail" && detail && (
-          <SessionDetail
-            session={detail}
-            onBack={() => setView("history")}
-            onDelete={(id) => { removeSession(id); setDetail(null); setView("history"); }}
-            onSave={(s) => { upsertSession(s); setDetail(s); }}
-            onUpdateScore={updateScore}
+          <HistoryView
+            onOpen={(s) => openForMarking(s)}
+            onDelete={(id) => {
+              removeSession(id);
+              // refresh by toggling
+              setView("setup");
+              setView("history");
+            }}
           />
         )}
       </main>
@@ -372,84 +583,137 @@ export default function MCQSimulator() {
   );
 }
 
-// ---------- UI Building Blocks ----------
-function TopBar({ view, onNavigate }: { view: string; onNavigate: (v: any) => void; }) {
+/* ---------- UI primitives ---------- */
+
+function TopBar({
+  view,
+  onNavigate,
+  quizLocked,
+}: {
+  view: "setup" | "quiz" | "review" | "history";
+  onNavigate: (v: "setup" | "quiz" | "review" | "history") => void;
+  quizLocked?: boolean;
+}) {
+  const lock = quizLocked;
+  const Nav = ({ label, to }: { label: string; to: typeof view }) => (
+    <button
+      disabled={lock && to !== "quiz"}
+      onClick={() => onNavigate(to)}
+      className={cx(
+        "rounded-full px-3 py-1 text-sm transition",
+        view === to ? "bg-neutral-100 text-neutral-900" : "text-neutral-300 hover:bg-neutral-900",
+        lock && to !== "quiz" && "opacity-40 cursor-not-allowed hover:bg-transparent"
+      )}
+    >
+      {label}
+    </button>
+  );
   return (
     <header className="sticky top-0 z-10 border-b border-neutral-900/80 bg-neutral-950/70 backdrop-blur">
       <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-emerald-400"></div>
+          <div className="h-2 w-2 rounded-full bg-emerald-400" />
           <span className="text-sm font-medium tracking-wide text-neutral-300">MCQ Simulator</span>
         </div>
         <nav className="flex gap-1">
-          <NavBtn active={view === "setup"} onClick={() => onNavigate("setup")}>Setup</NavBtn>
-          <NavBtn active={view === "quiz"} onClick={() => onNavigate("quiz")}>Quiz</NavBtn>
-          <NavBtn active={view === "review"} onClick={() => onNavigate("review")}>Review</NavBtn>
-          <NavBtn active={view === "history"} onClick={() => onNavigate("history")}>History</NavBtn>
+          <Nav label="Setup" to="setup" />
+          <Nav label="Quiz" to="quiz" />
+          <Nav label="Review" to="review" />
+          <Nav label="History" to="history" />
         </nav>
       </div>
     </header>
   );
 }
 
-function NavBtn({ active, children, onClick }: React.PropsWithChildren<{ active?: boolean; onClick?: () => void }>) {
-  return (
-    <button onClick={onClick}
-      className={classNames(
-        "rounded-full px-3 py-1 text-sm transition",
-        active ? "bg-neutral-100 text-neutral-900" : "text-neutral-300 hover:bg-neutral-900"
-      )}
-    >{children}</button>
-  );
-}
-
 function Card({ className, children }: React.PropsWithChildren<{ className?: string }>) {
-  return (
-    <div className={classNames("rounded-2xl border border-neutral-900 bg-neutral-950", className)}>{children}</div>
-  );
+  return <div className={cx("rounded-2xl border border-neutral-900 bg-neutral-950", className)}>{children}</div>;
 }
-
-function Button({ children, variant = "ghost", className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "ghost" | "primary" }) {
+function Button({
+  children,
+  variant = "ghost",
+  className,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "ghost" | "primary" }) {
   const base = "rounded-xl px-3 py-2 text-sm ring-1 ring-neutral-800 transition disabled:opacity-50";
-  const styles = variant === "primary"
-    ? "bg-neutral-100 text-neutral-900 hover:brightness-95 ring-neutral-200"
-    : "bg-neutral-950 text-neutral-200 hover:bg-neutral-900";
+  const styles =
+    variant === "primary"
+      ? "bg-neutral-100 text-neutral-900 hover:brightness-95 ring-neutral-200"
+      : "bg-neutral-950 text-neutral-200 hover:bg-neutral-900";
   return (
-    <button className={classNames(base, styles, className)} {...props}>{children}</button>
+    <button className={cx(base, styles, className)} {...props}>
+      {children}
+    </button>
   );
 }
-
-function LabeledInput({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+function LabeledInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
   return (
     <label className="block">
       <div className="text-sm text-neutral-400">{label}</div>
-      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
-        className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600" />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
+      />
     </label>
   );
 }
-
-function LabeledNumber({ label, value, onChange, min }: { label: string; value: number; onChange: (v: number) => void; min?: number }) {
+function LabeledNumber({
+  label,
+  value,
+  onChange,
+  min,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+}) {
   return (
     <label className="block">
       <div className="text-sm text-neutral-400">{label}</div>
-      <input type="number" value={value} min={min} onChange={(e) => onChange(Number(e.target.value))}
-        className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600" />
+      <input
+        type="number"
+        value={value}
+        min={min}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
+      />
     </label>
   );
 }
-
-function ChoicePill({ letter, selected, onClick }: { letter: Letter; selected?: boolean; onClick?: () => void }) {
+function ChoicePill({
+  letter,
+  selected,
+  onClick,
+}: {
+  letter: Letter;
+  selected?: boolean;
+  onClick?: () => void;
+}) {
   return (
-    <button onClick={onClick}
-      className={classNames(
+    <button
+      onClick={onClick}
+      className={cx(
         "rounded-2xl px-4 py-3 text-center text-base font-medium ring-1 transition",
         selected ? "bg-neutral-100 text-neutral-900 ring-neutral-200" : "bg-neutral-950 text-neutral-100 ring-neutral-900 hover:bg-neutral-900"
       )}
-    >{letter}</button>
+    >
+      {letter}
+    </button>
   );
 }
-
 function HeaderBlock({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <div className="px-1">
@@ -458,7 +722,6 @@ function HeaderBlock({ title, subtitle }: { title: string; subtitle?: string }) 
     </div>
   );
 }
-
 function Footer() {
   return (
     <footer className="border-t border-neutral-900/80 py-6 text-center text-xs text-neutral-500">
@@ -467,31 +730,195 @@ function Footer() {
   );
 }
 
-// ---------- History ----------
-function HistoryView({ onOpen }: { onOpen: (s: SessionMeta) => void }) {
+/* ------- Mistake donut (pure SVG) ------- */
+function MistakeChart({ tags }: { tags: MistakeTag[] }) {
+  const counts: Record<string, number> = {};
+  MISTAKE_OPTIONS.forEach((k) => (counts[k] = 0));
+  tags.forEach((t) => {
+    const k = t ?? "None";
+    counts[k] = (counts[k] ?? 0) + 1;
+  });
+  const entries = MISTAKE_OPTIONS.filter((k) => counts[k] > 0).map((k) => ({ key: k, value: counts[k] }));
+  const total = entries.reduce((s, e) => s + e.value, 0) || 1;
+
+  let acc = 0;
+  const r = 36,
+    C = 2 * Math.PI * r;
+  const cx0 = 48,
+    cy0 = 48,
+    stroke = 16;
+
+  return (
+    <div className="flex items-center gap-4">
+      <svg width="96" height="96" viewBox="0 0 96 96" className="shrink-0">
+        <circle cx={cx0} cy={cy0} r={r} fill="none" stroke="#262626" strokeWidth={stroke} />
+        {entries.map((e, i) => {
+          const frac = e.value / total;
+          const dash = frac * C;
+          const gap = C - dash;
+          const rot = (acc / total) * 360;
+          acc += e.value;
+          return (
+            <circle
+              key={e.key}
+              cx={cx0}
+              cy={cy0}
+              r={r}
+              fill="none"
+              strokeWidth={stroke}
+              strokeDasharray={`${dash} ${gap}`}
+              transform={`rotate(${rot} ${cx0} ${cy0})`}
+              stroke={i % 2 ? "#10b981" : "#f43f5e"}
+            />
+          );
+        })}
+        <circle cx={cx0} cy={cy0} r={r - stroke / 2} fill="#0a0a0a" />
+      </svg>
+      <div className="grid grid-cols-1 gap-1 text-xs">
+        {entries.map((e, i) => (
+          <div key={e.key} className="flex items-center gap-2">
+            <span
+              className="inline-block h-2 w-2 rounded-sm"
+              style={{ background: i % 2 ? "#10b981" : "#f43f5e" }}
+            />
+            <span className="text-neutral-300">{e.key}</span>
+            <span className="text-neutral-500 tabular-nums">{e.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------- Time vs Question scatter (pure SVG) -------
+   x: question number
+   y: seconds spent (linear)
+   color: green=correct, red=wrong, gray=unmarked
+   shape/opacity: guessed = hollow ring (or higher opacity), not guessed = filled
+*/
+function TimeCorrectScatter({
+  startNum,
+  perQSec,
+  correctFlags,
+  guessedFlags,
+}: {
+  startNum: number;
+  perQSec: number[];
+  correctFlags: (boolean | null)[];
+  guessedFlags: boolean[];
+}) {
+  const W = 420;
+  const H = 180;
+  const PAD = 28;
+
+  const N = perQSec.length;
+  const maxX = startNum + N - 1;
+  const maxY = Math.max(10, ...perQSec, 0);
+
+  const xScale = (qIdx: number) =>
+    PAD + ((qIdx - startNum) / Math.max(1, maxX - startNum)) * (W - 2 * PAD);
+  const yScale = (sec: number) => H - PAD - (sec / maxY) * (H - 2 * PAD);
+
+  const points = Array.from({ length: N }, (_, i) => {
+    const qn = startNum + i;
+    const sec = perQSec[i] ?? 0;
+    const flag = correctFlags[i];
+    const guessed = guessedFlags[i] ?? false;
+    const color = flag === true ? "#10b981" : flag === false ? "#f43f5e" : "#a3a3a3";
+    return { qn, sec, color, guessed };
+  });
+
+  return (
+    <div className="rounded-2xl border border-neutral-900 bg-neutral-950 p-3">
+      <div className="mb-2 text-sm text-neutral-300">Time vs Question</div>
+      <svg width={W} height={H}>
+        {/* axes */}
+        <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="#27272a" />
+        <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="#27272a" />
+        {/* ticks (Y) */}
+        {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+          const y = yScale(t * maxY);
+          return <line key={t} x1={PAD} y1={y} x2={W - PAD} y2={y} stroke="#111113" />;
+        })}
+        {/* labels */}
+        <text x={PAD} y={14} fill="#9ca3af" fontSize="10">sec</text>
+        <text x={W - 50} y={H - 8} fill="#9ca3af" fontSize="10">question</text>
+
+        {/* points */}
+        {points.map((p) =>
+          p.guessed ? (
+            // guessed: hollow ring
+            <g key={p.qn}>
+              <circle cx={xScale(p.qn)} cy={yScale(p.sec)} r={5} fill="none" stroke={p.color} strokeWidth={2} />
+              <circle cx={xScale(p.qn)} cy={yScale(p.sec)} r={2} fill={p.color} opacity={0.7} />
+            </g>
+          ) : (
+            // not guessed: solid dot (lower opacity if unmarked)
+            <circle
+              key={p.qn}
+              cx={xScale(p.qn)}
+              cy={yScale(p.sec)}
+              r={4}
+              fill={p.color}
+              opacity={p.color === "#a3a3a3" ? 0.6 : 0.95}
+            />
+          )
+        )}
+      </svg>
+
+      {/* legend */}
+      <div className="mt-2 flex items-center gap-4 text-xs text-neutral-400">
+        <div className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: "#10b981" }} />
+          correct
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f43f5e" }} />
+          wrong
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="inline-block h-3 w-3 rounded-full border-2" style={{ borderColor: "#a3a3a3" }} />
+          guessed = hollow
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------- History (opens Review/Marking) ------- */
+function HistoryView({
+  onOpen,
+  onDelete,
+}: {
+  onOpen: (s: SessionMeta) => void;
+  onDelete: (id: string) => void;
+}) {
   const sessions = loadStore().sessions;
   if (sessions.length === 0) {
     return (
-      <Card className="p-8 text-center text-neutral-400">No sessions yet. Create one from <span className="text-neutral-200">Setup</span>.</Card>
+      <Card className="p-8 text-center text-neutral-400">
+        No sessions yet. Create one from <span className="text-neutral-200">Setup</span>.
+      </Card>
     );
   }
   return (
     <div className="space-y-4">
-      <HeaderBlock title="History" subtitle="Compact list of past sessions. Click to open." />
+      <HeaderBlock title="History" subtitle="Open a session to continue marking or editing." />
       {sessions.map((s) => (
         <Card key={s.id} className="p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-medium">{s.name}</div>
-              <div className="text-xs text-neutral-500">{new Date(s.startedAt).toLocaleString()} • Q{s.startNum}–{s.endNum} • {s.minutes} min</div>
+              <div className="text-xs text-neutral-500">
+                {new Date(s.startedAt).toLocaleString()} • Q{s.startNum}–{s.endNum} • {s.minutes} min
+              </div>
             </div>
-            <div className="flex items-center gap-3">
-              {s.score ? (
-                <div className="rounded-full bg-neutral-900 px-3 py-1 text-xs">Score: {s.score.correct}/{s.score.total}</div>
-              ) : (
-                <div className="rounded-full bg-neutral-900 px-3 py-1 text-xs text-neutral-400">No score saved</div>
-              )}
-              <Button onClick={() => onOpen(s)}>Open</Button>
+            <div className="flex items-center gap-2">
+              <div className="rounded-full bg-neutral-900 px-3 py-1 text-xs">
+                {s.score ? `Score: ${s.score.correct}/${s.score.total}` : "No score"}
+              </div>
+              <Button onClick={() => onOpen(s)}>Mark</Button>
+              <Button onClick={() => onDelete(s.id)}>Delete</Button>
             </div>
           </div>
         </Card>
@@ -500,89 +927,6 @@ function HistoryView({ onOpen }: { onOpen: (s: SessionMeta) => void }) {
   );
 }
 
-function SessionDetail({ session, onBack, onDelete, onSave, onUpdateScore }: {
-  session: SessionMeta;
-  onBack: () => void;
-  onDelete: (id: string) => void;
-  onSave: (s: SessionMeta) => void;
-  onUpdateScore: (s: SessionMeta, correct: number) => void;
-}) {
-  const [local, setLocal] = useState<SessionMeta>(session);
-  useEffect(() => setLocal(session), [session]);
+/* ----------------- */
 
-  const total = local.endNum - local.startNum + 1;
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <HeaderBlock title={local.name} subtitle={`Q${local.startNum}–${local.endNum} • ${local.minutes} min • ${new Date(local.startedAt).toLocaleString()}`} />
-        <div className="flex gap-2">
-          <Button onClick={onBack}>Back</Button>
-          <Button onClick={() => onDelete(local.id)}>Delete</Button>
-          <Button variant="primary" onClick={() => onSave(local)}>Save</Button>
-        </div>
-      </div>
-
-      <Card className="p-4">
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
-          {Array.from({ length: total }, (_, i) => i).map((i) => {
-            const qn = local.startNum + i;
-            const ans = local.answers[i];
-            return (
-              <div key={i} className="flex items-center justify-between rounded-xl bg-neutral-900/50 p-3">
-                <div className="text-sm"><span className="text-neutral-400">{qn}.</span> <span className="font-medium">{ans?.choice ?? "—"}</span></div>
-                <div className="flex items-center gap-2">
-                  <div className="text-xs text-neutral-500 tabular-nums">{fmtTime(local.perQuestionSec[i] ?? 0)}</div>
-                  <div className="flex overflow-hidden rounded-lg ring-1 ring-neutral-800">
-                    {LETTERS.map((L) => (
-                      <button key={L}
-                        className={classNames("px-2 py-1 text-xs", ans?.choice === L ? "bg-neutral-100 text-neutral-900" : "hover:bg-neutral-800")}
-                        onClick={() => {
-                          const copy = { ...local };
-                          const arr = copy.answers.slice();
-                          arr[i] = { ...arr[i], choice: L };
-                          copy.answers = arr;
-                          setLocal(copy);
-                        }}
-                      >{L}</button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </Card>
-
-      <Card className="p-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <label className="block">
-            <div className="text-sm text-neutral-400">Rename session</div>
-            <input value={local.name} onChange={(e) => setLocal({ ...local, name: e.target.value })}
-              className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600" />
-          </label>
-
-          <div className="flex items-end gap-2">
-            <label className="block w-full">
-              <div className="text-sm text-neutral-400">Score (correct)</div>
-              <input type="number" min={0} max={total}
-                value={local.score?.correct ?? ""}
-                onChange={(e) => setLocal({ ...local, score: { correct: Number(e.target.value || 0), total } })}
-                className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600" />
-            </label>
-            <div className="text-sm text-neutral-500">/ {total}</div>
-            <Button onClick={() => onUpdateScore(local, local.score?.correct ?? 0)}>Save score</Button>
-          </div>
-        </div>
-
-        <label className="mt-4 block">
-          <div className="text-sm text-neutral-400">Notes</div>
-          <textarea rows={4}
-            value={local.notes ?? ""}
-            onChange={(e) => setLocal({ ...local, notes: e.target.value })}
-            className="mt-1 w-full rounded-xl bg-neutral-900/60 px-3 py-2 outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600" />
-        </label>
-      </Card>
-    </div>
-  );
-}
