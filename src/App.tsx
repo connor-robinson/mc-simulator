@@ -17,6 +17,7 @@ type Letter = typeof LETTERS[number];
 const MISTAKE_OPTIONS = [
   "None",
   "Calc / algebra mistakes",
+  "Read the question wrong",
   "Failed to spot setup",
   "Understanding",
   "Formula recall",
@@ -669,6 +670,7 @@ export default function App() {
         {view === "history" && (
           <>
             <ProgressPanel />
+            <HistoryMistakeSummary />   {/* <- new pie chart section */}
             <HistoryView
               onOpen={(s) => openForMarking(s)}
               onDelete={(id) => {
@@ -1011,6 +1013,44 @@ function ProgressPanel() {
     </div>
   );
 }
+function HistoryMistakeSummary() {
+  const [sessions, setSessions] = useState<SessionMeta[]>(() => loadStore().sessions);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key || (e.key !== LS_KEY && e.key !== LS_BACKUP)) return;
+      setSessions(loadStore().sessions);
+    };
+    window.addEventListener("storage", onStorage);
+    setSessions(loadStore().sessions);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // Flatten all mistake tags across all sessions, excluding "None"
+  const allTags = useMemo(() => {
+    const acc: MistakeTag[] = [];
+    for (const s of sessions) {
+      const tags = s.mistakeTags ?? [];
+      for (const t of tags) {
+        if (t && t !== "None") acc.push(t as MistakeTag);
+      }
+    }
+    return acc;
+  }, [sessions]);
+
+  return (
+    <Card className="mb-6 p-4">
+      <div className="mb-2 text-sm text-neutral-300">Mistake distribution — all sessions</div>
+      {allTags.length === 0 ? (
+        <div className="text-xs text-neutral-500">No tagged mistakes yet.</div>
+      ) : (
+        <MistakeChart tags={allTags} />
+      )}
+      <div className="mt-2 text-[11px] text-neutral-500">Excludes “None”.</div>
+    </Card>
+  );
+}
+
 function TrendPill({ series }: { series: number[] }) {
   if (!series.length) return <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-xs text-neutral-400">no data</span>;
   const last = series[series.length - 1];
