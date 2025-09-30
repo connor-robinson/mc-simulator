@@ -337,7 +337,6 @@ export default function App() {
         onNavigate={(v) => setView(v)}
         quizLocked={view === "quiz"}
         onSubmitClick={handleSubmit}
-        onNew={() => setView("setup")}
       />
 
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-8">
@@ -708,13 +707,11 @@ function TopBar({
   onNavigate,
   quizLocked,
   onSubmitClick,
-  onNew,
 }: {
   view: "setup" | "quiz" | "review" | "history";
   onNavigate: (v: "setup" | "quiz" | "review" | "history") => void;
   quizLocked?: boolean;
   onSubmitClick: () => void;
-  onNew: () => void;
 }) {
   const lock = quizLocked;
   const Nav = ({ label, to }: { label: string; to: typeof view }) => (
@@ -1020,7 +1017,6 @@ function TrendPill({ series }: { series: number[] }) {
   const first = series[0];
   const up = last > first + 0.5;
   const down = last < first - 0.5;
-  const same = !up && !down;
   const label = up ? "improving" : down ? "declining" : "flat";
   const cls = up ? "bg-emerald-500/15 text-emerald-300 ring-emerald-700/30"
            : down ? "bg-rose-500/15 text-rose-300 ring-rose-700/30"
