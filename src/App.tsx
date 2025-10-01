@@ -177,7 +177,7 @@ function removeSession(id: string) {
   });
 }
 
-type DrillRecord = { lastReviewedAt: number; lastOutcome: "correct" | "wrong" };
+type DrillRecord = { lastReviewedAt: number; lastOutcome: "correct" | "wrong"; lastTimeSec?: number };
 type DrillState = Record<string, DrillRecord>;
 
 function loadDrillState(): DrillState {
@@ -190,7 +190,8 @@ function loadDrillState(): DrillState {
         const rec = value as Partial<DrillRecord> | undefined;
         const lastReviewedAt = typeof rec?.lastReviewedAt === "number" ? rec.lastReviewedAt : 0;
         const lastOutcome = rec?.lastOutcome === "correct" ? "correct" : "wrong";
-        return [key, { lastReviewedAt, lastOutcome } as DrillRecord];
+        const lastTimeSec = typeof rec?.lastTimeSec === "number" ? rec.lastTimeSec : undefined;
+        return [key, { lastReviewedAt, lastOutcome, lastTimeSec } as DrillRecord];
       });
       return Object.fromEntries(entries);
     }
@@ -247,6 +248,121 @@ export default function App() {
     }
     pinnedHydratedRef.current = true;
   }, []);
+
+  // ---- Drill state & helpers ----
+  type DrillItem = {
+    key: string; // subject|questionNumber
+    subject: Subject;
+    question: number;
+    correctChoice: Letter | null;
+    explanation: string;
+    screenshot: string | null;
+    other: string;
+    lastWrongAt: number; // last wrong timestamp from history
+    historicSec: number; // last recorded sec on that wrong attempt
+  };
+  const [drillSubject, setDrillSubject] = useState<Subject>("math1");
+  const [drillState, setDrillState] = useState<DrillState>(() => loadDrillState());
+  const [currentDrill, setCurrentDrill] = useState<DrillItem | null>(null);
+  const [drillChoice, setDrillChoice] = useState<Letter | null>(null);
+  const [drillPhase, setDrillPhase] = useState<"question" | "feedback">("question");
+  const [drillSec, setDrillSec] = useState(0);
+  const drillTickRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key || (e.key !== LS_KEY && e.key !== LS_BACKUP && e.key !== LS_DRILL_STATE)) return;
+      setDrillState(loadDrillState());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  const drillPool = useMemo<DrillItem[]>(() => {
+    const { sessions } = loadStore();
+    const map = new Map<string, DrillItem>();
+    sessions.forEach((s) => {
+      const N = (s.answers ?? []).length;
+      for (let i = 0; i < N; i++) {
+        const flag = (s.correctFlags ?? [])[i];
+        if (flag !== false) continue;
+        const qn = (s.startNum ?? 0) + i;
+        const key = `${s.subject}|${qn}`;
+        const ans = normalizeAnswer(s.answers[i]);
+        const rec: DrillItem = {
+          key,
+          subject: s.subject ?? "math1",
+          question: qn,
+          correctChoice: ans.correctChoice ?? null,
+          explanation: (ans.explanation ?? "").trim(),
+          screenshot: ans.screenshot ?? null,
+          other: ans.other ?? "",
+          lastWrongAt: (s.endedAt ?? s.startedAt ?? 0),
+          historicSec: (s.perQuestionSec ?? [])[i] ?? 0,
+        };
+        const prev = map.get(key);
+        if (!prev || rec.lastWrongAt > prev.lastWrongAt) map.set(key, rec);
+      }
+    });
+    return Array.from(map.values()).filter((it) => it.subject === drillSubject);
+  }, [drillSubject, view]);
+
+  function pickNextDrillItem(): DrillItem | null {
+    if (drillPool.length === 0) return null;
+    const nowTs = now();
+    const weights = drillPool.map((it) => {
+      const rec = drillState[it.key];
+      const sinceWrongH = Math.max(0, (nowTs - it.lastWrongAt) / (1000 * 60 * 60));
+      const recencyBoost = 1 + 2 * Math.exp(-sinceWrongH / 48);
+      const baseTime = rec?.lastTimeSec ?? it.historicSec ?? 0;
+      const slowFactor = 1 + 1.5 * Math.min(1, baseTime / 120);
+      let reviewFactor = 1;
+      if (rec?.lastReviewedAt) {
+        const sinceReviewH = (nowTs - rec.lastReviewedAt) / (1000 * 60 * 60);
+        reviewFactor = sinceReviewH < 2 ? 0.2 : sinceReviewH < 8 ? 0.6 : sinceReviewH < 24 ? 0.8 : 1;
+      }
+      const outcomeFactor = rec?.lastOutcome === "correct" ? 0.7 : 1.3;
+      return Math.max(0.05, recencyBoost * slowFactor * reviewFactor * outcomeFactor);
+    });
+    const total = weights.reduce((a, b) => a + b, 0);
+    let r = Math.random() * total;
+    for (let i = 0; i < drillPool.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return drillPool[i];
+    }
+    return drillPool[drillPool.length - 1];
+  }
+
+  function startDrillRound() {
+    const next = pickNextDrillItem();
+    setCurrentDrill(next);
+    setDrillChoice(null);
+    setDrillPhase("question");
+    setDrillSec(0);
+    if (drillTickRef.current) window.clearInterval(drillTickRef.current);
+    if (next) {
+      const id = window.setInterval(() => setDrillSec((s) => s + 1), 1000);
+      drillTickRef.current = id;
+    }
+  }
+
+  useEffect(() => {
+    if (view !== "drill") {
+      if (drillTickRef.current) window.clearInterval(drillTickRef.current);
+      return;
+    }
+    startDrillRound();
+    return () => { if (drillTickRef.current) window.clearInterval(drillTickRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, drillSubject]);
+
+  function commitDrillOutcome(outcome: "correct" | "wrong") {
+    if (!currentDrill) return;
+    const rec: DrillRecord = { lastReviewedAt: now(), lastOutcome: outcome, lastTimeSec: drillSec };
+    const nextState = { ...drillState, [currentDrill.key]: rec };
+    setDrillState(nextState);
+    writeDrillState(nextState);
+  }
 
   useEffect(() => {
     if (!pinnedHydratedRef.current) return;
@@ -1022,6 +1138,123 @@ export default function App() {
             />
           </>
         )}
+
+        {/* Drill */}
+        {view === "drill" && (
+          <div className="space-y-6">
+            <HeaderBlock title="Drill" subtitle="Infinite flashcards prioritized by recent wrongs and speed." />
+
+            <Card className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-neutral-400">Subject</div>
+                <div className="flex gap-2">
+                  {(["math1","math2","physics"] as Subject[]).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setDrillSubject(s)}
+                      className={cx(
+                        "rounded-lg px-3 py-1 text-sm ring-1",
+                        drillSubject === s ? "bg-neutral-100 text-neutral-900 ring-neutral-200" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                      )}
+                    >
+                      {s.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </Card>
+
+            {drillPool.length === 0 ? (
+              <Card className="p-8 text-center text-neutral-400">
+                No wrong questions found for this subject. Mark some answers as wrong in <span className="text-neutral-200">Mark</span> and save to history.
+              </Card>
+            ) : currentDrill == null ? (
+              <Card className="p-8 text-center text-neutral-400">Preparing next card…</Card>
+            ) : (
+              <Card className="p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm text-neutral-400">Q{currentDrill.question}</div>
+                    <SubjectBadge subject={currentDrill.subject} />
+                  </div>
+                  <div className="text-xs text-neutral-500">Time: <span className="tabular-nums text-neutral-300">{fmtTime(drillSec)}</span></div>
+                </div>
+
+                {(currentDrill.screenshot || currentDrill.explanation || currentDrill.other) && (
+                  <div className="rounded-xl bg-neutral-950/70 p-3 ring-1 ring-neutral-900">
+                    {currentDrill.screenshot && (
+                      <img src={currentDrill.screenshot} alt={`Q${currentDrill.question} screenshot`} className="max-h-64 w-full rounded-lg border border-neutral-800 object-contain" />
+                    )}
+                    {currentDrill.explanation && (
+                      <div className="mt-2 text-sm text-neutral-300 whitespace-pre-wrap">{currentDrill.explanation}</div>
+                    )}
+                    {currentDrill.other && (
+                      <div className="mt-2 text-xs text-neutral-400">Note: {currentDrill.other}</div>
+                    )}
+                  </div>
+                )}
+
+                <div className="grid grid-flow-col auto-cols-fr gap-2 overflow-x-auto">
+                  {LETTERS.map((L) => (
+                    <ChoicePill key={L} letter={L} selected={drillChoice === L} onClick={() => setDrillChoice(L)} />
+                  ))}
+                </div>
+
+                {drillPhase === "question" ? (
+                  <div className="flex items-center justify-end gap-2">
+                    <Button onClick={() => startDrillRound()}>Skip</Button>
+                    <Button
+                      variant="primary"
+                      disabled={!drillChoice}
+                      onClick={() => {
+                        if (drillTickRef.current) window.clearInterval(drillTickRef.current);
+                        setDrillPhase("feedback");
+                      }}
+                    >
+                      Check
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {currentDrill.correctChoice ? (
+                      <div className="text-sm">
+                        <span className="text-neutral-400">Your answer:</span> <span className="font-medium">{drillChoice ?? "-"}</span>
+                        <span className="mx-2 text-neutral-600">•</span>
+                        <span className="text-neutral-400">Correct:</span> <span className="font-medium">{currentDrill.correctChoice}</span>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-neutral-400">No saved correct choice for this item. Mark the result manually.</div>
+                    )}
+
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-neutral-500">Time taken: <span className="tabular-nums text-neutral-300">{fmtTime(drillSec)}</span></div>
+                      <div className="flex gap-2">
+                        {currentDrill.correctChoice ? null : (
+                          <>
+                            <Button onClick={() => { commitDrillOutcome("wrong"); startDrillRound(); }}>Wrong</Button>
+                            <Button variant="primary" onClick={() => { commitDrillOutcome("correct"); startDrillRound(); }}>Correct</Button>
+                          </>
+                        )}
+                        {currentDrill.correctChoice && (
+                          <Button
+                            variant="primary"
+                            onClick={() => {
+                              const ok = drillChoice && currentDrill.correctChoice && drillChoice === currentDrill.correctChoice;
+                              commitDrillOutcome(ok ? "correct" : "wrong");
+                              startDrillRound();
+                            }}
+                          >
+                            Next
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </Card>
+            )}
+          </div>
+        )}
       </main>
 
       {/* Confirm Submit Modal */}
@@ -1052,8 +1285,8 @@ function TopBar({
   quizLocked,
   onSubmitClick,
 }: {
-  view: "setup" | "quiz" | "review" | "history";
-  onNavigate: (v: "setup" | "quiz" | "review" | "history") => void;
+  view: "plan" | "solve" | "mark" | "archive" | "drill";
+  onNavigate: (v: "plan" | "solve" | "mark" | "archive" | "drill") => void;
   quizLocked?: boolean;
   onSubmitClick: () => void;
 }) {
