@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState, } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState, } from "react";
 
-import { PenLine, Notebook, ExternalLink, Trash2 } from "lucide-react";
+import { PenLine, Notebook, ExternalLink, Trash2, Pin, PinOff } from "lucide-react";
 
 /* MCQ Simulator — TSX, Tailwind (dark, minimalist)
    Added per your requests:
@@ -31,9 +31,26 @@ type Subject = "math1" | "math2" | "physics";
 
 const LS_KEY = "mcqSessionsV1";
 const LS_BACKUP = "mcqSessionsV1__backup";
+const LS_PINNED_NOTE = "mcqPinnedNoteV1";
 
 /* ---------- Types ---------- */
-type Answer = { choice: Letter | null; other: string };
+type Answer = {
+  choice: Letter | null;
+  other: string;
+  correctChoice: Letter | null;
+  explanation: string;
+  pinned: boolean;
+};
+
+function normalizeAnswer(raw?: Partial<Answer>): Answer {
+  return {
+    choice: raw?.choice ?? null,
+    other: raw?.other ?? "",
+    correctChoice: raw?.correctChoice ?? null,
+    explanation: raw?.explanation ?? "",
+    pinned: raw?.pinned ?? false,
+  };
+}
 
 type SessionMeta = {
   id: string;
@@ -74,7 +91,8 @@ function addMissingFields(s: any): SessionMeta {
   // Migrate missing fields with safe defaults
   const subject: Subject = (s.subject === "math1" || s.subject === "math2" || s.subject === "physics") ? s.subject : "math1";
   const version = 1 as const;
-  return { subject, version, ...s };
+  const answers = Array.isArray(s.answers) ? s.answers.map((ans: any) => normalizeAnswer(ans)) : [];
+  return { subject, version, ...s, answers };
 }
 function sanitize(store: any): Store | null {
   if (!store || typeof store !== "object") return null;
@@ -160,9 +178,9 @@ export default function App() {
 
   // Notes
   const [sessionNotes, setSessionNotes] = useState<string>("");
+  const [pinnedNote, setPinnedNote] = useState<string>("");
+  const pinnedHydratedRef = useRef(false);
 
-  // Setup notes preview toggle (math combines M1+M2)
-  const [notesPreviewScope, setNotesPreviewScope] = useState<"math" | "physics">("math"); // NEW
 
   // Active/loaded session
   const [sessionId, setSessionId] = useState<string>("");
@@ -181,6 +199,28 @@ export default function App() {
 
   const totalQuestions = Math.max(0, endNum - startNum + 1);
   const correctCount = useMemo(() => correctFlags.filter((x) => x === true).length, [correctFlags]);
+
+  useEffect(() => {
+    const stored = readRaw(LS_PINNED_NOTE);
+    if (typeof stored === "string") {
+      setPinnedNote(stored);
+    }
+    pinnedHydratedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!pinnedHydratedRef.current) return;
+    writeRaw(LS_PINNED_NOTE, pinnedNote);
+  }, [pinnedNote]);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== LS_PINNED_NOTE) return;
+      setPinnedNote(e.newValue ?? "");
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   /* Timer */
   const tickRef = useRef<number | null>(null);
@@ -211,7 +251,7 @@ export default function App() {
     if (Number.isNaN(startNum) || Number.isNaN(endNum) || startNum > endNum) return alert("Check your question range.");
     if (minutes <= 0) return alert("Timer must be positive.");
     const N = endNum - startNum + 1;
-    const initAnswers: Answer[] = Array.from({ length: N }, () => ({ choice: null, other: "" }));
+    const initAnswers: Answer[] = Array.from({ length: N }, () => normalizeAnswer());
     const initTimes = Array.from({ length: N }, () => 0);
     const initCorrect = Array.from({ length: N }, () => null as (boolean | null));
     const initGuess = Array.from({ length: N }, () => false);
@@ -288,7 +328,7 @@ export default function App() {
     setStartNum(s.startNum);
     setEndNum(s.endNum);
     setMinutes(s.minutes);
-    setAnswers(s.answers.slice());
+    setAnswers(s.answers.map((ans) => normalizeAnswer(ans)));
     setPerQSec(s.perQuestionSec.slice());
     setCorrectFlags((s.correctFlags ?? Array.from({ length: s.answers.length }, () => null)).slice());
     setGuessedFlags((s.guessedFlags ?? Array.from({ length: s.answers.length }, () => false)).slice());
@@ -306,7 +346,42 @@ export default function App() {
     setAnswers((prev) => { const a = prev.slice(); a[idx] = { ...a[idx], choice: letter }; return a; });
   }
   function setOther(idx: number, text: string) {
-    setAnswers((prev) => { const a = prev.slice(); a[idx] = { ...a[idx], other: text }; return a; });
+    setAnswers((prev) => {
+      const a = prev.slice();
+      a[idx] = { ...a[idx], other: text };
+      return a;
+    });
+  }
+  function setCorrectChoice(idx: number, letter: Letter | null) {
+    setAnswers((prev) => {
+      const a = prev.slice();
+      const current = a[idx];
+      if (!current) return prev;
+      const next = letter && current.correctChoice === letter ? null : letter;
+      a[idx] = { ...current, correctChoice: next ?? null };
+      return a;
+    });
+  }
+  function setExplanation(idx: number, text: string) {
+    setAnswers((prev) => {
+      const a = prev.slice();
+      const current = a[idx];
+      if (!current) return prev;
+      const shouldUnpin = !text.trim();
+      a[idx] = { ...current, explanation: text, pinned: shouldUnpin ? false : current.pinned };
+      return a;
+    });
+  }
+  function togglePinnedInsight(idx: number) {
+    setAnswers((prev) => {
+      const a = prev.slice();
+      const current = a[idx];
+      if (!current) return prev;
+      const hasText = current.explanation.trim().length > 0;
+      if (!hasText && !current.pinned) return prev;
+      a[idx] = { ...current, pinned: hasText ? !current.pinned : false };
+      return a;
+    });
   }
   function toggleGuess(idx: number) {
     setGuessedFlags((prev) => { const a = prev.slice(); a[idx] = !a[idx]; return a; });
@@ -319,17 +394,41 @@ export default function App() {
     [startNum, totalQuestions]
   );
 
-  /* Setup: last two notes preview for chosen scope */
-  const lastTwoNotes = useMemo(() => {
+  const pinnedInsights = useMemo(() => {
+    return answers
+      .map((ans, idx) => {
+        const text = ans?.explanation?.trim();
+        const question = questionNumbers[idx];
+        if (!ans?.pinned || !text || question == null) return null;
+        return { question, text };
+      })
+      .filter((item): item is { question: number; text: string } => item !== null);
+  }, [answers, questionNumbers]);
+
+  /* Setup: surfaced notes for the active subject */
+  const subjectNotes = useMemo(() => {
     const { sessions } = loadStore();
-    const group = notesPreviewScope === "math"
-      ? sessions.filter(s => s.subject === "math1" || s.subject === "math2")
-      : sessions.filter(s => s.subject === "physics");
-    return group
-      .filter(s => (s.notes ?? "").trim().length > 0)
-      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
-      .slice(0, 2);
-  }, [notesPreviewScope, view]); // re-eval when you open Setup or change scope
+    return sessions
+      .filter((s) => {
+        if (subject === "physics") return s.subject === "physics";
+        return s.subject === subject;
+      })
+      .filter((s) => (s.notes ?? "").trim().length > 0)
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  }, [subject, view]); // re-eval when you open Setup or change subject
+  const subjectNotesLabel = useMemo(() => {
+    switch (subject) {
+      case "math1":
+        return "Math 1";
+      case "math2":
+        return "Math 2";
+      case "physics":
+        return "Physics";
+      default:
+        return "Notes";
+    }
+  }, [subject]);
+
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 antialiased selection:bg-neutral-800">
@@ -373,48 +472,63 @@ export default function App() {
               </div>
             </div>
 
-            {/* Notes preview (last two for chosen scope) */}
-            <Card className="mt-6 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="text-sm text-neutral-400">Recent notes preview</div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setNotesPreviewScope("math")}
-                    className={cx(
-                      "rounded-full px-3 py-1 text-xs ring-1",
-                      notesPreviewScope === "math" ? "bg-neutral-100 text-neutral-900 ring-neutral-200" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
-                    )}
-                    title="Math = M1 + M2"
-                  >
-                    Math (M1+M2)
-                  </button>
-                  <button
-                    onClick={() => setNotesPreviewScope("physics")}
-                    className={cx(
-                      "rounded-full px-3 py-1 text-xs ring-1",
-                      notesPreviewScope === "physics" ? "bg-neutral-100 text-neutral-900 ring-neutral-200" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
-                    )}
-                  >
-                    Physics
-                  </button>
+            {/* Notes and pinned reminders */}
+            <Card className="mt-6 p-4 space-y-4">
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-sm text-neutral-400">Pinned note</div>
+                  <div className="text-xs text-neutral-500">Shared for Math (M1/M2) and Physics.</div>
                 </div>
+                <textarea
+                  value={pinnedNote}
+                  onChange={(e) => setPinnedNote(e.target.value)}
+                  className="w-full rounded-xl bg-neutral-900/60 px-3 py-2 text-sm outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
+                  placeholder="Use this space for quick reminders to keep in view during setup."
+                  rows={3}
+                />
               </div>
-              {lastTwoNotes.length === 0 ? (
-                <div className="text-xs text-neutral-500">No previous notes in this category yet.</div>
-              ) : (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {lastTwoNotes.map((s) => (
-                    <div key={s.id} className="rounded-xl bg-neutral-900/50 p-3 ring-1 ring-neutral-900">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-xs text-neutral-400">{new Date(s.startedAt).toLocaleString()}</div>
-                        <SubjectBadge subject={s.subject} />
-                      </div>
-                      <div className="text-xs text-neutral-300 whitespace-pre-wrap">{s.notes}</div>
-                    </div>
-                  ))}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-sm text-neutral-400">Previous notes for {subjectNotesLabel}</div>
+                  <div className="text-xs text-neutral-500">{subjectNotes.length} saved</div>
                 </div>
-              )}
+                {subjectNotes.length === 0 ? (
+                  <div className="text-xs text-neutral-500">No previous notes for this subject yet.</div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {subjectNotes.map((s) => {
+                      const pinned = (s.answers ?? []).map((ans, idx) => {
+                        const text = (ans.explanation ?? "").trim();
+                        if (!ans.pinned || !text) return null;
+                        return { question: (s.startNum ?? 0) + idx, text };
+                      }).filter((item): item is { question: number; text: string } => item !== null);
+                      return (
+                        <div key={s.id} className="rounded-xl bg-neutral-900/50 p-3 ring-1 ring-neutral-900">
+                          <div className="mb-1 flex items-center justify-between">
+                            <div className="text-xs text-neutral-400">{new Date(s.startedAt).toLocaleString()}</div>
+                            <SubjectBadge subject={s.subject} />
+                          </div>
+                          <div className="text-xs text-neutral-300 whitespace-pre-wrap">{s.notes}</div>
+                          {pinned.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {pinned.map((pin, idx2) => (
+                                <span
+                                  key={`${pin.question}-${idx2}`}
+                                  className="rounded-full bg-neutral-950 px-2 py-1 text-[11px] text-neutral-300 ring-1 ring-neutral-800"
+                                >
+                                  Q{pin.question}: {pin.text}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </Card>
+
 
             <div className="mt-6 flex items-center justify-between gap-3">
               <div className="text-xs text-neutral-400">
@@ -512,7 +626,7 @@ export default function App() {
         {/* Review */}
         {view === "review" && (
           <div className="space-y-6">
-            <HeaderBlock title="Review & Mark" subtitle="Toggle notes (?), mark ✓/✗, flag guesses, tag mistakes. Score updates automatically." />
+            <HeaderBlock title="Review & Mark" subtitle="Toggle notes (?), mark OK/X, flag guesses, tag mistakes. Score updates automatically." />
             <Card className="p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="text-sm text-neutral-400">Auto score</div>
@@ -522,89 +636,176 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
-                {questionNumbers.map((q, i) => (
-                  <div key={q} className="rounded-xl bg-neutral-900/50 p-3">
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm">
-                        <span className="text-neutral-400">{q}.</span>{" "}
-                        <span className="font-medium">{answers[i]?.choice ?? "—"}</span>
-                        {guessedFlags[i] && (
-                          <span className="ml-2 rounded-sm bg-amber-400/90 px-1.5 py-0.5 text-[10px] font-medium text-neutral-900">guess</span>
-                        )}
-                      </div>
-                      <div className="text-xs text-neutral-500 tabular-nums">{fmtTime(perQSec[i] ?? 0)}</div>
-                    </div>
-
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                      <div className="flex overflow-hidden rounded-lg ring-1 ring-neutral-800">
-                        {LETTERS.map((L) => (
-                          <button
-                            key={L}
-                            className={cx("px-2 py-1 text-xs", answers[i]?.choice === L ? "bg-neutral-100 text-neutral-900" : "hover:bg-neutral-800")}
-                            onClick={() => setChoice(i, L)}
-                          >
-                            {L}
-                          </button>
-                        ))}
+                {questionNumbers.map((q, i) => {
+                  const answer = answers[i];
+                  const explanation = answer?.explanation ?? "";
+                  const canTogglePin = explanation.trim().length > 0 || !!answer?.pinned;
+                  return (
+                    <div key={q} className="rounded-xl bg-neutral-900/50 p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm">
+                          <span className="text-neutral-400">{q}.</span>{" "}
+                          <span className="font-medium">{answer?.choice ?? "-"}</span>
+                          {guessedFlags[i] && (
+                            <span className="ml-2 rounded-sm bg-amber-400/90 px-1.5 py-0.5 text-[10px] font-medium text-neutral-900">guess</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-neutral-500 tabular-nums">{fmtTime(perQSec[i] ?? 0)}</div>
                       </div>
 
-                      <div className="flex gap-1">
-                        <button
-                          className={cx(
-                            "px-2 py-1 text-xs rounded-md ring-1",
-                            correctFlags[i] === true ? "bg-emerald-500/90 text-neutral-900 ring-emerald-400" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
-                          )}
-                          title="Mark correct"
-                          onClick={() => setCorrectFlags((prev) => { const a = prev.slice(); a[i] = true; return a; })}
-                        >✓</button>
-                        <button
-                          className={cx(
-                            "px-2 py-1 text-xs rounded-md ring-1",
-                            correctFlags[i] === false ? "bg-rose-500/90 text-neutral-900 ring-rose-400" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
-                          )}
-                          title="Mark wrong"
-                          onClick={() => setCorrectFlags((prev) => { const a = prev.slice(); a[i] = false; return a; })}
-                        >✗</button>
-                        <button
-                          className={cx(
-                            "px-2 py-1 text-xs rounded-md ring-1",
-                            guessedFlags[i] ? "bg-amber-400/90 text-neutral-900 ring-amber-300" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
-                          )}
-                          title="Toggle guess"
-                          onClick={() => toggleGuess(i)}
-                        >?</button>
-                        {answers[i]?.other && (
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <div className="flex overflow-hidden rounded-lg ring-1 ring-neutral-800">
+                          {LETTERS.map((L) => (
+                            <button
+                              key={L}
+                              className={cx(
+                                "px-2 py-1 text-xs transition",
+                                correctFlags[i] === false && answer?.correctChoice === L
+                                  ? "bg-emerald-500/80 text-neutral-900 ring-1 ring-emerald-400"
+                                  : answer?.choice === L
+                                  ? "bg-neutral-100 text-neutral-900"
+                                  : "hover:bg-neutral-800"
+                              )}
+                              onClick={() => setChoice(i, L)}
+                            >
+                              {L}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="flex gap-1">
                           <button
-                            className="px-2 py-1 text-xs rounded-md ring-1 bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
-                            title="Show notes"
-                            onClick={(e) => {
-                              const el = e.currentTarget.parentElement?.parentElement?.nextElementSibling as HTMLDivElement | null;
-                              if (el) el.classList.toggle("hidden");
+                            className={cx(
+                              "px-2 py-1 text-xs rounded-md ring-1",
+                              correctFlags[i] === true ? "bg-emerald-500/90 text-neutral-900 ring-emerald-400" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                            )}
+                            title="Mark correct"
+                            onClick={() => {
+                              setCorrectFlags((prev) => { const a = prev.slice(); a[i] = true; return a; });
+                              setAnswers((prev) => {
+                                const a = prev.slice();
+                                const current = a[i];
+                                if (!current) return prev;
+                                a[i] = { ...current, correctChoice: null, explanation: "", pinned: false };
+                                return a;
+                              });
                             }}
-                          >note</button>
-                        )}
+                          >?</button>
+                          <button
+                            className={cx(
+                              "px-2 py-1 text-xs rounded-md ring-1",
+                              correctFlags[i] === false ? "bg-rose-500/90 text-neutral-900 ring-rose-400" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                            )}
+                            title="Mark wrong"
+                            onClick={() => setCorrectFlags((prev) => { const a = prev.slice(); a[i] = false; return a; })}
+                          >X</button>
+                          <button
+                            className={cx(
+                              "px-2 py-1 text-xs rounded-md ring-1",
+                              guessedFlags[i] ? "bg-amber-400/90 text-neutral-900 ring-amber-300" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                            )}
+                            title="Toggle guess"
+                            onClick={() => toggleGuess(i)}
+                          >?</button>
+                          {answer?.other && (
+                            <button
+                              className="px-2 py-1 text-xs rounded-md ring-1 bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                              title="Show notes"
+                              onClick={(e) => {
+                                const el = e.currentTarget.parentElement?.parentElement?.nextElementSibling as HTMLDivElement | null;
+                                if (el) el.classList.toggle("hidden");
+                              }}
+                            >note</button>
+                          )}
+                        </div>
+                      </div>
+
+                      {correctFlags[i] === false && (
+                        <div className="mt-3 space-y-2 rounded-lg border border-neutral-900 bg-neutral-950/60 p-3">
+                          <div>
+                            <div className="text-[11px] uppercase tracking-wide text-neutral-600">Correct answer</div>
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {LETTERS.map((L) => (
+                                <button
+                                  key={`correct-${q}-${L}`}
+                                  className={cx(
+                                    "rounded-md px-2 py-1 text-xs ring-1 transition",
+                                    answer?.correctChoice === L
+                                      ? "bg-emerald-500/90 text-neutral-900 ring-emerald-400"
+                                      : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                                  )}
+                                  onClick={() => setCorrectChoice(i, L)}
+                                >
+                                  {L}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="mb-1 flex items-center justify-between text-xs text-neutral-500">
+                              <span>Why was it wrong?</span>
+                              <button
+                                onClick={() => togglePinnedInsight(i)}
+                                disabled={!canTogglePin}
+                                className={cx(
+                                  "rounded-md p-1 ring-1 transition",
+                                  answer?.pinned
+                                    ? "bg-emerald-500/20 text-emerald-300 ring-emerald-400/40"
+                                    : "bg-neutral-950 text-neutral-400 ring-neutral-800 hover:bg-neutral-900 disabled:opacity-40"
+                                )}
+                                title={answer?.pinned ? "Unpin from setup notes" : "Pin to setup notes"}
+                              >
+                                {answer?.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                              </button>
+                            </div>
+                            <textarea
+                              rows={3}
+                              value={explanation}
+                              onChange={(e) => setExplanation(i, e.target.value)}
+                              className="w-full rounded-lg bg-neutral-900/60 px-3 py-2 text-xs outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
+                              placeholder="e.g., Misread the axle direction; forgot to convert units."
+                            />
+                            <div className="mt-1 text-[11px] text-neutral-600">Pinned explanations surface in Setup notes.</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {answer?.other && (
+                        <div className="hidden mt-2 rounded-lg bg-neutral-950/70 p-2 text-xs text-neutral-300 ring-1 ring-neutral-900">{answer?.other}</div>
+                      )}
+
+                      <div className="mt-2">
+                        <select
+                          className="w-full rounded-lg bg-neutral-950 px-2 py-1 text-xs ring-1 ring-neutral-800 hover:bg-neutral-900"
+                          value={mistakeTags[i] ?? "None"}
+                          onChange={(e) => {
+                            const v = e.target.value as MistakeTag;
+                            setMistakeTags((prev) => { const a = prev.slice(); a[i] = v; return a; });
+                          }}
+                        >
+                          {MISTAKE_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
                       </div>
                     </div>
-
-                    {answers[i]?.other && (
-                      <div className="hidden mt-2 rounded-lg bg-neutral-950/70 p-2 text-xs text-neutral-300 ring-1 ring-neutral-900">{answers[i]?.other}</div>
-                    )}
-
-                    <div className="mt-2">
-                      <select
-                        className="w-full rounded-lg bg-neutral-950 px-2 py-1 text-xs ring-1 ring-neutral-800 hover:bg-neutral-900"
-                        value={mistakeTags[i] ?? "None"}
-                        onChange={(e) => {
-                          const v = e.target.value as MistakeTag;
-                          setMistakeTags((prev) => { const a = prev.slice(); a[i] = v; return a; });
-                        }}
-                      >
-                        {MISTAKE_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+
+              {pinnedInsights.length > 0 && (
+                <Card className="p-4 mt-6">
+                  <div className="text-sm text-neutral-400">Pinned insights</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {pinnedInsights.map((item, idx) => (
+                      <span
+                        key={`${item.question}-${idx}`}
+                        className="rounded-full bg-neutral-900 px-2 py-1 text-xs text-neutral-300 ring-1 ring-neutral-800"
+                      >
+                        Q{item.question}: {item.text}
+                      </span>
+                    ))}
+                  </div>
+                </Card>
+              )}
 
               {/* Notes */}
               <Card className="p-4 mt-6">
@@ -669,8 +870,7 @@ export default function App() {
         {/* History (rename kept + subject + progress charts) */}
         {view === "history" && (
           <>
-            <ProgressPanel />
-            <HistoryMistakeSummary />   {/* <- new pie chart section */}
+            <HistoryAnalysisRow />
             <HistoryView
               onOpen={(s) => openForMarking(s)}
               onDelete={(id) => {
@@ -972,9 +1172,11 @@ function TimeCorrectScatter({
   );
 }
 
-/* ------- History progress panel (score% trend Math vs Physics) ------- */
-function ProgressPanel() {
+/* ------- History analysis row (subject trends + mistakes) ------- */
+function HistoryAnalysisRow() {
   const [sessions, setSessions] = useState<SessionMeta[]>(() => loadStore().sessions);
+  const [subjectView, setSubjectView] = useState<Subject | "all">("all");
+
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (!e.key || (e.key !== LS_KEY && e.key !== LS_BACKUP)) return;
@@ -985,71 +1187,113 @@ function ProgressPanel() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  const mathSessions = sessions
-    .filter(s => s.subject === "math1" || s.subject === "math2")
-    .filter(s => s.score && s.score.total > 0)
-    .sort((a,b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
-  const physicsSessions = sessions
-    .filter(s => s.subject === "physics")
-    .filter(s => s.score && s.score.total > 0)
-    .sort((a,b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+  const subjectMeta: Array<{ subject: Subject; label: string; blurb: string }> = [
+    { subject: "math1", label: "Math 1", blurb: "Mechanics" },
+    { subject: "math2", label: "Math 2", blurb: "Statistics" },
+    { subject: "physics", label: "Physics", blurb: "Concepts" },
+  ];
+
+  const cards = subjectMeta.map(({ subject, label, blurb }) => {
+    const subjectSessions = sessions
+      .filter((s) => s.subject === subject)
+      .filter((s) => s.score && s.score.total > 0)
+      .sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+
+    const scoreSeries = subjectSessions.map((s) => Math.round((100 * s.score!.correct) / s.score!.total));
+    const avgScore = scoreSeries.length ? Math.round(scoreSeries.reduce((sum, v) => sum + v, 0) / scoreSeries.length) : null;
+    const lastSession = subjectSessions[subjectSessions.length - 1];
+    const lastLabel = lastSession?.startedAt ? new Date(lastSession.startedAt).toLocaleDateString() : null;
+
+    const mistakeCounts: Record<string, number> = {};
+    subjectSessions.forEach((s) => {
+      (s.mistakeTags ?? []).forEach((tag) => {
+        if (!tag || tag === "None") return;
+        mistakeCounts[tag] = (mistakeCounts[tag] ?? 0) + 1;
+      });
+    });
+    const totalMistakes = Object.values(mistakeCounts).reduce((sum, v) => sum + v, 0);
+    const topMistakes = Object.entries(mistakeCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([key, value]) => ({ key, value, percent: totalMistakes ? Math.round((value / totalMistakes) * 100) : 0 }));
+
+    return { subject, label, blurb, scoreSeries, avgScore, lastLabel, topMistakes };
+  });
+
+  const visibleCards = subjectView === "all" ? cards : cards.filter((c) => c.subject === subjectView);
+  const gridCols = subjectView === "all" ? "md:grid-cols-2 xl:grid-cols-3" : "md:grid-cols-1";
 
   return (
-    <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
-      <Card className="p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-sm text-neutral-300">Progress — Math (M1+M2)</div>
-          <TrendPill series={mathSessions.map(s => (100 * (s.score!.correct / s.score!.total)))} />
+    <div className="mb-6">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium text-neutral-200">Subject overview</div>
+          <div className="text-xs text-neutral-500">Score trends and recent mistake patterns</div>
         </div>
-        <Sparkline series={mathSessions.map(s => (100 * (s.score!.correct / s.score!.total)))} />
-      </Card>
-      <Card className="p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-sm text-neutral-300">Progress — Physics</div>
-          <TrendPill series={physicsSessions.map(s => (100 * (s.score!.correct / s.score!.total)))} />
+        <div className="flex items-center gap-1 text-xs">
+          {(["all", "math1", "math2", "physics"] as const).map((key) => (
+            <button
+              key={key}
+              onClick={() => setSubjectView(key)}
+              className={cx(
+                "rounded-full px-3 py-1 ring-1 transition",
+                subjectView === key
+                  ? "bg-neutral-100 text-neutral-900 ring-neutral-200"
+                  : "bg-neutral-950 text-neutral-300 ring-neutral-800 hover:bg-neutral-900"
+              )}
+            >
+              {key === "all" ? "All" : key.toUpperCase()}
+            </button>
+          ))}
         </div>
-        <Sparkline series={physicsSessions.map(s => (100 * (s.score!.correct / s.score!.total)))} />
-      </Card>
+      </div>
+      <div className={cx("grid grid-cols-1 gap-4", gridCols)}>
+        {visibleCards.map((card) => (
+          <Card key={card.subject} className="p-4 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <SubjectBadge subject={card.subject} />
+                  <span className="text-sm font-semibold text-neutral-200">{card.label}</span>
+                </div>
+                <div className="text-xs text-neutral-500">
+                  {card.scoreSeries.length ? (
+                    <>
+                      <span>{card.avgScore}% avg</span>
+                      <span className="mx-1 text-neutral-700">/</span>
+                      <span>{card.lastLabel ?? "n/a"}</span>
+                    </>
+                  ) : (
+                    <span>No scored sessions yet.</span>
+                  )}
+                </div>
+                <div className="text-[11px] uppercase tracking-wide text-neutral-600">{card.blurb}</div>
+              </div>
+              <TrendPill series={card.scoreSeries} />
+            </div>
+            <Sparkline series={card.scoreSeries} />
+            <div className="border-t border-neutral-900 pt-3">
+              <div className="text-[11px] uppercase tracking-wide text-neutral-600">Top mistakes</div>
+              {card.topMistakes.length ? (
+                <div className="mt-2 space-y-1 text-xs text-neutral-300">
+                  {card.topMistakes.map((m) => (
+                    <div key={m.key} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{m.key}</span>
+                      <span className="text-neutral-500">{m.percent}%</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-2 text-xs text-neutral-600">No mistakes tagged yet.</div>
+              )}
+            </div>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }
-function HistoryMistakeSummary() {
-  const [sessions, setSessions] = useState<SessionMeta[]>(() => loadStore().sessions);
 
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (!e.key || (e.key !== LS_KEY && e.key !== LS_BACKUP)) return;
-      setSessions(loadStore().sessions);
-    };
-    window.addEventListener("storage", onStorage);
-    setSessions(loadStore().sessions);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  // Flatten all mistake tags across all sessions, excluding "None"
-  const allTags = useMemo(() => {
-    const acc: MistakeTag[] = [];
-    for (const s of sessions) {
-      const tags = s.mistakeTags ?? [];
-      for (const t of tags) {
-        if (t && t !== "None") acc.push(t as MistakeTag);
-      }
-    }
-    return acc;
-  }, [sessions]);
-
-  return (
-    <Card className="mb-6 p-4">
-      <div className="mb-2 text-sm text-neutral-300">Mistake distribution — all sessions</div>
-      {allTags.length === 0 ? (
-        <div className="text-xs text-neutral-500">No tagged mistakes yet.</div>
-      ) : (
-        <MistakeChart tags={allTags} />
-      )}
-      <div className="mt-2 text-[11px] text-neutral-500">Excludes “None”.</div>
-    </Card>
-  );
-}
 
 function TrendPill({ series }: { series: number[] }) {
   if (!series.length) return <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-xs text-neutral-400">no data</span>;
@@ -1220,3 +1464,12 @@ function HistoryView({
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
