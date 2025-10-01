@@ -1175,7 +1175,6 @@ function TimeCorrectScatter({
 /* ------- History analysis row (subject trends + mistakes) ------- */
 function HistoryAnalysisRow() {
   const [sessions, setSessions] = useState<SessionMeta[]>(() => loadStore().sessions);
-  const [subjectView, setSubjectView] = useState<Subject | "all">("all");
 
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
@@ -1200,6 +1199,7 @@ function HistoryAnalysisRow() {
       .sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
 
     const scoreSeries = subjectSessions.map((s) => Math.round((100 * s.score!.correct) / s.score!.total));
+    const labels = subjectSessions.map((s, idx) => (s.startedAt ? new Date(s.startedAt).toLocaleDateString() : `Session ${idx + 1}`));
     const avgScore = scoreSeries.length ? Math.round(scoreSeries.reduce((sum, v) => sum + v, 0) / scoreSeries.length) : null;
     const lastSession = subjectSessions[subjectSessions.length - 1];
     const lastLabel = lastSession?.startedAt ? new Date(lastSession.startedAt).toLocaleDateString() : null;
@@ -1217,38 +1217,17 @@ function HistoryAnalysisRow() {
       .slice(0, 3)
       .map(([key, value]) => ({ key, value, percent: totalMistakes ? Math.round((value / totalMistakes) * 100) : 0 }));
 
-    return { subject, label, blurb, scoreSeries, avgScore, lastLabel, topMistakes };
+    return { subject, label, blurb, scoreSeries, labels, avgScore, lastLabel, topMistakes };
   });
-
-  const visibleCards = subjectView === "all" ? cards : cards.filter((c) => c.subject === subjectView);
-  const gridCols = subjectView === "all" ? "md:grid-cols-2 xl:grid-cols-3" : "md:grid-cols-1";
 
   return (
     <div className="mb-6">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="text-sm font-medium text-neutral-200">Subject overview</div>
-          <div className="text-xs text-neutral-500">Score trends and recent mistake patterns</div>
-        </div>
-        <div className="flex items-center gap-1 text-xs">
-          {(["all", "math1", "math2", "physics"] as const).map((key) => (
-            <button
-              key={key}
-              onClick={() => setSubjectView(key)}
-              className={cx(
-                "rounded-full px-3 py-1 ring-1 transition",
-                subjectView === key
-                  ? "bg-neutral-100 text-neutral-900 ring-neutral-200"
-                  : "bg-neutral-950 text-neutral-300 ring-neutral-800 hover:bg-neutral-900"
-              )}
-            >
-              {key === "all" ? "All" : key.toUpperCase()}
-            </button>
-          ))}
-        </div>
+      <div className="mb-3">
+        <div className="text-sm font-medium text-neutral-200">Subject overview</div>
+        <div className="text-xs text-neutral-500">Score trends and recent mistake patterns</div>
       </div>
-      <div className={cx("grid grid-cols-1 gap-4", gridCols)}>
-        {visibleCards.map((card) => (
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {cards.map((card) => (
           <Card key={card.subject} className="p-4 space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div className="space-y-1">
@@ -1260,7 +1239,7 @@ function HistoryAnalysisRow() {
                   {card.scoreSeries.length ? (
                     <>
                       <span>{card.avgScore}% avg</span>
-                      <span className="mx-1 text-neutral-700">/</span>
+                      <span className="mx-1 text-neutral-700">•</span>
                       <span>{card.lastLabel ?? "n/a"}</span>
                     </>
                   ) : (
@@ -1271,7 +1250,7 @@ function HistoryAnalysisRow() {
               </div>
               <TrendPill series={card.scoreSeries} />
             </div>
-            <Sparkline series={card.scoreSeries} />
+            <TrendChart series={card.scoreSeries} labels={card.labels} />
             <div className="border-t border-neutral-900 pt-3">
               <div className="text-[11px] uppercase tracking-wide text-neutral-600">Top mistakes</div>
               {card.topMistakes.length ? (
@@ -1294,7 +1273,100 @@ function HistoryAnalysisRow() {
   );
 }
 
+function TrendChart({ series, labels }: { series: number[]; labels: string[] }) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
+  if (!series.length) {
+    return <div className="h-[220px] rounded-xl border border-neutral-900 bg-neutral-950/50 text-xs text-neutral-500 flex items-center justify-center">No scored sessions yet.</div>;
+  }
+
+  const width = 720;
+  const height = 220;
+  const margin = { top: 20, right: 24, bottom: 32, left: 44 };
+  const innerWidth = width - margin.left - margin.right;
+  const innerHeight = height - margin.top - margin.bottom;
+  const min = 0;
+  const max = 100;
+
+  const points = series.map((value, index) => {
+    const x = margin.left + (series.length > 1 ? (index / Math.max(1, series.length - 1)) * innerWidth : innerWidth / 2);
+    const clamped = Math.max(min, Math.min(max, value));
+    const ratio = (clamped - min) / Math.max(1, max - min);
+    const y = margin.top + (1 - ratio) * innerHeight;
+    return {
+      x,
+      y,
+      value: Math.round(value * 10) / 10,
+      label: labels[index] ?? `Session ${index + 1}`,
+      index,
+    };
+  });
+
+  const path = points.map((p, idx) => `${idx === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  const yTicks = [0, 25, 50, 75, 100];
+  const xTickIndexes = series.length <= 1
+    ? [0]
+    : series.length <= 4
+      ? Array.from({ length: series.length }, (_, idx) => idx)
+      : Array.from(new Set([0, Math.floor((series.length - 1) / 2), series.length - 1]));
+
+  const hoveredPoint = hoverIndex != null ? points[hoverIndex] : null;
+  const tooltipX = hoveredPoint ? Math.min(hoveredPoint.x + 12, width - 150) : 0;
+  const tooltipY = hoveredPoint ? Math.max(hoveredPoint.y - 12, 40) : 0;
+
+  return (
+    <svg className="w-full" viewBox={`0 0 ${width} ${height}`} role="img">
+      <rect x={0} y={0} width={width} height={height} rx={16} fill="#0a0a0a" />
+      <line x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} stroke="#27272a" strokeWidth={1} />
+      <line x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} stroke="#27272a" strokeWidth={1} />
+      {yTicks.map((tick) => {
+        const ratio = (tick - min) / Math.max(1, max - min);
+        const y = margin.top + (1 - ratio) * innerHeight;
+        return (
+          <g key={`y-${tick}`}>
+            <line x1={margin.left} y1={y} x2={width - margin.right} y2={y} stroke="#1f1f23" strokeWidth={0.5} />
+            <text x={margin.left - 8} y={y + 4} fill="#6b7280" fontSize={10} textAnchor="end">
+              {tick}%
+            </text>
+          </g>
+        );
+      })}
+      {xTickIndexes.map((idx) => {
+        const point = points[idx];
+        return (
+          <text key={`x-${idx}`} x={point.x} y={height - margin.bottom + 20} fill="#6b7280" fontSize={10} textAnchor="middle">
+            {labels[idx] ?? `#${idx + 1}`}
+          </text>
+        );
+      })}
+      <path d={path} fill="none" stroke="#38bdf8" strokeWidth={2} />
+      {points.map((p, idx) => (
+        <circle
+          key={`pt-${idx}`}
+          cx={p.x}
+          cy={p.y}
+          r={hoverIndex === idx ? 5 : 4}
+          fill={hoverIndex === idx ? "#38bdf8" : "#f8fafc"}
+          stroke="#0f172a"
+          strokeWidth={1}
+          onMouseEnter={() => setHoverIndex(idx)}
+          onMouseLeave={() => setHoverIndex(null)}
+        />
+      ))}
+      {hoveredPoint && (
+        <g transform={`translate(${tooltipX} ${tooltipY})`}>
+          <rect x={0} y={-28} width={140} height={32} rx={8} fill="#111827" stroke="#1f2937" strokeWidth={1} />
+          <text x={8} y={-12} fill="#e5e7eb" fontSize={11}>
+            Score: {hoveredPoint.value}%
+          </text>
+          <text x={8} y={2} fill="#9ca3af" fontSize={10}>
+            {hoveredPoint.label}
+          </text>
+        </g>
+      )}
+    </svg>
+  );
+}
 function TrendPill({ series }: { series: number[] }) {
   if (!series.length) return <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-xs text-neutral-400">no data</span>;
   const last = series[series.length - 1];
@@ -1307,23 +1379,6 @@ function TrendPill({ series }: { series: number[] }) {
            : "bg-neutral-800 text-neutral-300 ring-neutral-700/30";
   return <span className={cx("rounded-full px-2 py-0.5 text-xs ring-1", cls)}>{label}</span>;
 }
-function Sparkline({ series }: { series: number[] }) {
-  const W = 320, H = 80, PAD = 6;
-  if (!series.length) return <div className="h-[80px] text-xs text-neutral-500 flex items-center">No scored sessions yet.</div>;
-  const min = Math.min(...series, 0), max = Math.max(...series, 100);
-  const x = (i: number) => PAD + (i / Math.max(1, series.length - 1)) * (W - 2 * PAD);
-  const y = (v: number) => H - PAD - ((v - min) / Math.max(1, max - min)) * (H - 2 * PAD);
-  const path = series.map((v, i) => `${i ? "L" : "M"} ${x(i)} ${y(v)}`).join(" ");
-  return (
-    <svg width={W} height={H}>
-      <rect x={0} y={0} width={W} height={H} rx={10} fill="#0a0a0a" />
-      <path d={path} fill="none" stroke="#a3a3a3" strokeWidth={1.5} />
-      {series.map((v, i) => <circle key={i} cx={x(i)} cy={y(v)} r={2} fill="#a3a3a3" />)}
-      <text x={W - 48} y={H - 10} fill="#9ca3af" fontSize="10">% score</text>
-    </svg>
-  );
-}
-
 /* ------- History (rename + subject badge + inline notes) ------- */
 function HistoryView({
   onOpen,
@@ -1464,6 +1519,11 @@ function HistoryView({
     </div>
   );
 }
+
+
+
+
+
 
 
 
