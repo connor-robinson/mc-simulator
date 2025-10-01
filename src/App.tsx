@@ -690,7 +690,7 @@ export default function App() {
                                 return a;
                               });
                             }}
-                          >?</button>
+                          >✓</button>
                           <button
                             className={cx(
                               "px-2 py-1 text-xs rounded-md ring-1",
