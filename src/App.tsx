@@ -381,7 +381,7 @@ export default function App() {
   /* Timer */
   const tickRef = useRef<number | null>(null);
   useEffect(() => {
-    if (view !== "quiz" || !deadline) return;
+    if (view !== "solve" || !deadline) return;
     const i = window.setInterval(() => {
       const left = Math.max(0, deadline - now());
       if (left <= 0) {
