@@ -33,6 +33,8 @@ const LS_KEY = "mcqSessionsV1";
 const LS_BACKUP = "mcqSessionsV1__backup";
 const LS_PINNED_NOTE = "mcqPinnedNoteV1";
 
+const LS_DRILL_STATE = "mcqDrillStateV1";
+
 /* ---------- Types ---------- */
 type Answer = {
   choice: Letter | null;
@@ -40,6 +42,7 @@ type Answer = {
   correctChoice: Letter | null;
   explanation: string;
   pinned: boolean;
+  screenshot: string | null;
 };
 
 function normalizeAnswer(raw?: Partial<Answer>): Answer {
@@ -49,6 +52,7 @@ function normalizeAnswer(raw?: Partial<Answer>): Answer {
     correctChoice: raw?.correctChoice ?? null,
     explanation: raw?.explanation ?? "",
     pinned: raw?.pinned ?? false,
+    screenshot: raw?.screenshot ?? null,
   };
 }
 
@@ -81,6 +85,15 @@ const fmtTime = (sec: number) => {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 };
 const now = () => Date.now();
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
 
 /* ---------- Storage (robust) ---------- */
 function isSession(s: any): boolean {
@@ -164,10 +177,37 @@ function removeSession(id: string) {
   });
 }
 
+type DrillRecord = { lastReviewedAt: number; lastOutcome: "correct" | "wrong" };
+type DrillState = Record<string, DrillRecord>;
+
+function loadDrillState(): DrillState {
+  const raw = readRaw(LS_DRILL_STATE);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      const entries = Object.entries(parsed).map(([key, value]) => {
+        const rec = value as Partial<DrillRecord> | undefined;
+        const lastReviewedAt = typeof rec?.lastReviewedAt === "number" ? rec.lastReviewedAt : 0;
+        const lastOutcome = rec?.lastOutcome === "correct" ? "correct" : "wrong";
+        return [key, { lastReviewedAt, lastOutcome } as DrillRecord];
+      });
+      return Object.fromEntries(entries);
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return {};
+}
+
+function writeDrillState(state: DrillState) {
+  writeRaw(LS_DRILL_STATE, JSON.stringify(state));
+}
+
 /* ---------- App ---------- */
 export default function App() {
-  type View = "setup" | "quiz" | "review" | "history";
-  const [view, setView] = useState<View>("setup");
+  type View = "plan" | "solve" | "mark" | "archive" | "drill";
+  const [view, setView] = useState<View>("plan");
 
   // Setup
   const [sessionName, setSessionName] = useState("");
@@ -270,7 +310,7 @@ export default function App() {
     setStartedAt(t0);
     setEndedAt(null);
     setDeadline(t0 + minutes * 60 * 1000);
-    setView("quiz");
+    setView("solve");
 
     upsertSession({
       id,
@@ -316,7 +356,7 @@ export default function App() {
     setEndedAt(t1);
     setDeadline(null);
     setConfirmOpen(false);
-    setView("review");
+    setView("mark");
   }
   function handleSubmit() { setConfirmOpen(true); }
 
@@ -338,7 +378,7 @@ export default function App() {
     setDeadline(null);
     setCurrentIdx(0);
     setSessionNotes(s.notes ?? "");
-    setView("review");
+    setView("mark");
   }
 
   /* Local UI helpers */
@@ -367,8 +407,21 @@ export default function App() {
       const a = prev.slice();
       const current = a[idx];
       if (!current) return prev;
-      const shouldUnpin = !text.trim();
+      const shouldUnpin = !text.trim() && !current.screenshot;
       a[idx] = { ...current, explanation: text, pinned: shouldUnpin ? false : current.pinned };
+      return a;
+    });
+  }
+  function setScreenshot(idx: number, dataUrl: string | null) {
+    setAnswers((prev) => {
+      const a = prev.slice();
+      const current = a[idx];
+      if (!current) return prev;
+      const next = { ...current, screenshot: dataUrl };
+      if (!next.explanation.trim() && !dataUrl) {
+        next.pinned = false;
+      }
+      a[idx] = next;
       return a;
     });
   }
@@ -377,14 +430,31 @@ export default function App() {
       const a = prev.slice();
       const current = a[idx];
       if (!current) return prev;
-      const hasText = current.explanation.trim().length > 0;
-      if (!hasText && !current.pinned) return prev;
-      a[idx] = { ...current, pinned: hasText ? !current.pinned : false };
+      const hasContent = current.explanation.trim().length > 0 || !!current.screenshot;
+      if (!hasContent && !current.pinned) return prev;
+      a[idx] = { ...current, pinned: hasContent ? !current.pinned : false };
       return a;
     });
   }
   function toggleGuess(idx: number) {
     setGuessedFlags((prev) => { const a = prev.slice(); a[idx] = !a[idx]; return a; });
+  }
+  async function applyScreenshotFromFile(idx: number, file: File) {
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      if (dataUrl) setScreenshot(idx, dataUrl);
+    } catch (error) {
+      console.error('Failed to read screenshot', error);
+    }
+  }
+  function handlePasteScreenshot(idx: number, event: React.ClipboardEvent<HTMLDivElement | HTMLTextAreaElement>) {
+    const items = Array.from(event.clipboardData?.items ?? []);
+    const imageItem = items.find((item) => item.type && item.type.startsWith('image/'));
+    if (!imageItem) return;
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    event.preventDefault();
+    applyScreenshotFromFile(idx, file);
   }
   function nav(d: number) { setCurrentIdx((i) => Math.min(Math.max(0, i + d), totalQuestions - 1)); }
   function jumpTo(i: number) { setCurrentIdx(i); }
@@ -397,12 +467,14 @@ export default function App() {
   const pinnedInsights = useMemo(() => {
     return answers
       .map((ans, idx) => {
-        const text = ans?.explanation?.trim();
+        if (!ans) return null;
+        const text = (ans.explanation ?? "").trim();
+        const screenshot = ans.screenshot ?? null;
         const question = questionNumbers[idx];
-        if (!ans?.pinned || !text || question == null) return null;
-        return { question, text };
+        if (!ans.pinned || (!text && !screenshot) || question == null) return null;
+        return { question, text, screenshot };
       })
-      .filter((item): item is { question: number; text: string } => item !== null);
+      .filter((item): item is { question: number; text: string; screenshot: string | null } => item !== null);
   }, [answers, questionNumbers]);
 
   /* Setup: surfaced notes for the active subject */
@@ -413,8 +485,25 @@ export default function App() {
         if (subject === "physics") return s.subject === "physics";
         return s.subject === subject;
       })
-      .filter((s) => (s.notes ?? "").trim().length > 0)
-      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+      .map((s) => {
+        const notesText = (s.notes ?? "").trim();
+        const pinned = (s.answers ?? []).map((ans, idx) => {
+          const normalized = normalizeAnswer(ans);
+          if (!normalized.pinned) return null;
+          const text = normalized.explanation.trim();
+          const screenshot = normalized.screenshot;
+          if (!text && !screenshot) return null;
+          return {
+            question: (s.startNum ?? 0) + idx,
+            text,
+            screenshot,
+          };
+        }).filter((item): item is { question: number; text: string; screenshot: string | null } => item !== null);
+        const hasContent = notesText.length > 0 || pinned.length > 0;
+        return hasContent ? { session: s, notesText, pinned } : null;
+      })
+      .filter((item): item is { session: SessionMeta; notesText: string; pinned: { question: number; text: string; screenshot: string | null }[] } => item !== null)
+      .sort((a, b) => (b.session.startedAt ?? 0) - (a.session.startedAt ?? 0));
   }, [subject, view]); // re-eval when you open Setup or change subject
   const subjectNotesLabel = useMemo(() => {
     switch (subject) {
@@ -435,13 +524,13 @@ export default function App() {
       <TopBar
         view={view}
         onNavigate={(v) => setView(v)}
-        quizLocked={view === "quiz"}
+        quizLocked={view === "solve"}
         onSubmitClick={handleSubmit}
       />
 
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-8">
         {/* Setup */}
-        {view === "setup" && (
+        {view === "plan" && (
           <Card className="p-6">
             <h1 className="text-2xl font-semibold tracking-tight">MCQ Session Setup</h1>
             <p className="mt-1 text-sm text-neutral-400">Minimalist, keyboard-friendly, and fast.</p>
@@ -496,34 +585,36 @@ export default function App() {
                   <div className="text-xs text-neutral-500">No previous notes for this subject yet.</div>
                 ) : (
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {subjectNotes.map((s) => {
-                      const pinned = (s.answers ?? []).map((ans, idx) => {
-                        const text = (ans.explanation ?? "").trim();
-                        if (!ans.pinned || !text) return null;
-                        return { question: (s.startNum ?? 0) + idx, text };
-                      }).filter((item): item is { question: number; text: string } => item !== null);
-                      return (
-                        <div key={s.id} className="rounded-xl bg-neutral-900/50 p-3 ring-1 ring-neutral-900">
-                          <div className="mb-1 flex items-center justify-between">
-                            <div className="text-xs text-neutral-400">{new Date(s.startedAt).toLocaleString()}</div>
-                            <SubjectBadge subject={s.subject} />
-                          </div>
-                          <div className="text-xs text-neutral-300 whitespace-pre-wrap">{s.notes}</div>
-                          {pinned.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {pinned.map((pin, idx2) => (
-                                <span
-                                  key={`${pin.question}-${idx2}`}
-                                  className="rounded-full bg-neutral-950 px-2 py-1 text-[11px] text-neutral-300 ring-1 ring-neutral-800"
-                                >
-                                  Q{pin.question}: {pin.text}
-                                </span>
-                              ))}
-                            </div>
-                          )}
+                    {subjectNotes.map(({ session: s, notesText, pinned }) => (
+                      <div key={s.id} className="space-y-2 rounded-xl bg-neutral-900/50 p-3 ring-1 ring-neutral-900">
+                        <div className="flex items-center justify-between">
+                          <div className="text-xs text-neutral-400">{new Date(s.startedAt).toLocaleString()}</div>
+                          <SubjectBadge subject={s.subject} />
                         </div>
-                      );
-                    })}
+                        {notesText && (
+                          <div className="text-xs text-neutral-300 whitespace-pre-wrap">{notesText}</div>
+                        )}
+                        {pinned.length > 0 && (
+                          <div className="space-y-2">
+                            {pinned.map((pin, idx2) => (
+                              <div key={`${pin.question}-${idx2}`} className="rounded-lg bg-neutral-950/80 p-2 text-xs text-neutral-300 ring-1 ring-neutral-800">
+                                <div>
+                                  Q{pin.question}
+                                  {pin.text && <span className="ml-1 text-neutral-500">— {pin.text}</span>}
+                                </div>
+                                {pin.screenshot && (
+                                  <img
+                                    src={pin.screenshot}
+                                    alt={`Q${pin.question} screenshot`}
+                                    className="mt-2 max-h-32 w-full rounded-md border border-neutral-800 object-contain"
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -535,7 +626,7 @@ export default function App() {
                 Range size: <span className="text-neutral-200 font-medium">{totalQuestions}</span>
               </div>
               <div className="flex gap-2">
-                <Button onClick={() => setView("history")}>View history</Button>
+                <Button onClick={() => setView("archive")}>View history</Button>
                 <Button variant="primary" onClick={startQuiz}>Start</Button>
               </div>
             </div>
@@ -543,7 +634,7 @@ export default function App() {
         )}
 
         {/* Quiz */}
-        {view === "quiz" && (
+        {view === "solve" && (
           <div className="space-y-6">
             <Card className="p-5 flex items-center justify-between">
               <div className="text-sm text-neutral-400">Time left</div>
@@ -624,9 +715,9 @@ export default function App() {
         )}
 
         {/* Review */}
-        {view === "review" && (
+        {view === "mark" && (
           <div className="space-y-6">
-            <HeaderBlock title="Review & Mark" subtitle="Toggle notes (?), mark OK/X, flag guesses, tag mistakes. Score updates automatically." />
+            <HeaderBlock title="Mark Session" subtitle="Toggle notes (?), mark OK/X, capture screenshots, flag guesses, tag mistakes. Score updates automatically." />
             <Card className="p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="text-sm text-neutral-400">Auto score</div>
@@ -639,7 +730,8 @@ export default function App() {
                 {questionNumbers.map((q, i) => {
                   const answer = answers[i];
                   const explanation = answer?.explanation ?? "";
-                  const canTogglePin = explanation.trim().length > 0 || !!answer?.pinned;
+                  const screenshot = answer?.screenshot ?? null;
+                  const canTogglePin = explanation.trim().length > 0 || !!screenshot || !!answer?.pinned;
                   return (
                     <div key={q} className="rounded-xl bg-neutral-900/50 p-3">
                       <div className="flex items-center justify-between">
@@ -721,7 +813,7 @@ export default function App() {
                       </div>
 
                       {correctFlags[i] === false && (
-                        <div className="mt-3 space-y-2 rounded-lg border border-neutral-900 bg-neutral-950/60 p-3">
+                        <div className="mt-3 space-y-3 rounded-lg border border-neutral-900 bg-neutral-950/60 p-3">
                           <div>
                             <div className="text-[11px] uppercase tracking-wide text-neutral-600">Correct answer</div>
                             <div className="mt-2 flex flex-wrap gap-1">
@@ -741,7 +833,7 @@ export default function App() {
                               ))}
                             </div>
                           </div>
-                          <div>
+                          <div className="space-y-2">
                             <div className="mb-1 flex items-center justify-between text-xs text-neutral-500">
                               <span>Why was it wrong?</span>
                               <button
@@ -762,10 +854,50 @@ export default function App() {
                               rows={3}
                               value={explanation}
                               onChange={(e) => setExplanation(i, e.target.value)}
+                              onPaste={(event) => handlePasteScreenshot(i, event)}
                               className="w-full rounded-lg bg-neutral-900/60 px-3 py-2 text-xs outline-none ring-1 ring-neutral-800 focus:ring-2 focus:ring-neutral-600"
                               placeholder="e.g., Misread the axle direction; forgot to convert units."
                             />
-                            <div className="mt-1 text-[11px] text-neutral-600">Pinned explanations surface in Setup notes.</div>
+                            <div className="text-[11px] text-neutral-600">Pinned explanations surface in Setup notes.</div>
+                            <div
+                              className="rounded-lg border border-dashed border-neutral-800 bg-neutral-950/50 p-3 text-xs text-neutral-400"
+                              onPaste={(event) => handlePasteScreenshot(i, event)}
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span>Screenshot of the question</span>
+                                <div className="flex gap-2">
+                                  <label className="cursor-pointer rounded-md bg-neutral-900 px-2 py-1 text-[11px] text-neutral-300 ring-1 ring-neutral-800 hover:bg-neutral-800">
+                                    Upload
+                                    <input
+                                      type="file"
+                                      accept="image/*"
+                                      className="hidden"
+                                      onChange={(event) => {
+                                        const file = event.target.files?.[0];
+                                        if (file) applyScreenshotFromFile(i, file);
+                                        if (event.target.value) event.target.value = "";
+                                      }}
+                                    />
+                                  </label>
+                                  {screenshot && (
+                                    <button
+                                      className="rounded-md bg-neutral-900 px-2 py-1 text-[11px] text-neutral-400 ring-1 ring-neutral-800 hover:bg-neutral-800"
+                                      onClick={() => setScreenshot(i, null)}
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              <p className="mt-1 text-[11px] text-neutral-600">Paste with Ctrl+V or upload to keep the prompt handy while drilling later.</p>
+                              {screenshot && (
+                                <img
+                                  src={screenshot}
+                                  alt={`Q${q} screenshot`}
+                                  className="mt-3 max-h-48 w-full rounded-lg border border-neutral-800 object-contain"
+                                />
+                              )}
+                            </div>
                           </div>
                         </div>
                       )}
@@ -796,12 +928,22 @@ export default function App() {
                   <div className="text-sm text-neutral-400">Pinned insights</div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {pinnedInsights.map((item, idx) => (
-                      <span
+                      <div
                         key={`${item.question}-${idx}`}
-                        className="rounded-full bg-neutral-900 px-2 py-1 text-xs text-neutral-300 ring-1 ring-neutral-800"
+                        className="flex w-full flex-col gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-xs text-neutral-300 ring-1 ring-neutral-800 md:w-auto"
                       >
-                        Q{item.question}: {item.text}
-                      </span>
+                        <div>
+                          Q{item.question}
+                          {item.text && <span className="ml-1 text-neutral-500">— {item.text}</span>}
+                        </div>
+                        {item.screenshot && (
+                          <img
+                            src={item.screenshot}
+                            alt={`Q${item.question} screenshot`}
+                            className="max-h-32 rounded-lg border border-neutral-800 object-contain"
+                          />
+                        )}
+                      </div>
                     ))}
                   </div>
                 </Card>
@@ -833,7 +975,7 @@ export default function App() {
               </div>
 
               <div className="mt-4 text-right">
-                <Button onClick={() => setView("setup")}>New session</Button>
+                <Button onClick={() => setView("plan")}>New session</Button>
                 <Button
                   variant="primary"
                   className="ml-2"
@@ -857,7 +999,7 @@ export default function App() {
                       notes: sessionNotes,
                       version: 1,
                     });
-                    setView("history");
+                    setView("archive");
                   }}
                 >
                   Save to history
@@ -868,7 +1010,7 @@ export default function App() {
         )}
 
         {/* History (rename kept + subject + progress charts) */}
-        {view === "history" && (
+        {view === "archive" && (
           <>
             <HistoryAnalysisRow />
             <HistoryView
@@ -918,12 +1060,12 @@ function TopBar({
   const lock = quizLocked;
   const Nav = ({ label, to }: { label: string; to: typeof view }) => (
     <button
-      disabled={lock && to !== "quiz"}
+      disabled={lock && to !== "solve"}
       onClick={() => onNavigate(to)}
       className={cx(
         "rounded-full px-3 py-1 text-sm transition",
         view === to ? "bg-neutral-100 text-neutral-900" : "text-neutral-300 hover:bg-neutral-900",
-        lock && to !== "quiz" && "opacity-40 cursor-not-allowed hover:bg-transparent"
+        lock && to !== "solve" && "opacity-40 cursor-not-allowed hover:bg-transparent"
       )}
     >
       {label}
@@ -937,11 +1079,12 @@ function TopBar({
           <span className="text-sm font-medium tracking-wide text-neutral-300">MCQ Simulator</span>
         </div>
         <nav className="flex items-center gap-1">
-          <Nav label="Setup" to="setup" />
-          <Nav label="Quiz" to="quiz" />
-          <Nav label="Review" to="review" />
-          <Nav label="History" to="history" />
-          {view === "quiz" && (
+          <Nav label="Plan" to="plan" />
+          <Nav label="Solve" to="solve" />
+          <Nav label="Mark" to="mark" />
+          <Nav label="Archive" to="archive" />
+          <Nav label="Drill" to="drill" />
+          {view === "solve" && (
             <button
               onClick={onSubmitClick}
               className="ml-2 rounded-full border border-neutral-800 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-900"
@@ -1436,7 +1579,7 @@ function HistoryView({
 
   return (
     <div className="space-y-4">
-      <HeaderBlock title="History" subtitle="Open to mark, rename titles inline, or edit notes directly." />
+      <HeaderBlock title="Archive" subtitle="Open to mark, rename titles inline, or edit notes directly." />
       {sessions.map((s) => {
         const renaming = Object.prototype.hasOwnProperty.call(nameEdits, s.id);
         return (
