@@ -1,8 +1,8 @@
-ï»¿import React, { useEffect, useMemo, useRef, useState, } from "react";
+import React, { useEffect, useMemo, useRef, useState, } from "react";
 
 import { PenLine, Notebook, ExternalLink, Trash2, Pin, PinOff } from "lucide-react";
 
-/* MCQ Simulator â€” TSX, Tailwind (dark, minimalist)
+/* MCQ Simulator — TSX, Tailwind (dark, minimalist)
    Added per your requests:
    - Session category: math1 / math2 / physics
    - Setup: preview last two notes (Math = math1+math2 combined, Physics separate) with a toggle
@@ -304,7 +304,7 @@ export default function App() {
         if (!prev || rec.lastWrongAt > prev.lastWrongAt) map.set(key, rec);
       }
     });
-    return Array.from(map.values()).filter((it) => it.subject === drillSubject);
+    return Array.from(map.values()).filter((it) => it.subject === drillSubject && !!it.screenshot);
   }, [drillSubject, view]);
 
   function pickNextDrillItem(): DrillItem | null {
@@ -716,7 +716,7 @@ export default function App() {
                               <div key={`${pin.question}-${idx2}`} className="rounded-lg bg-neutral-950/80 p-2 text-xs text-neutral-300 ring-1 ring-neutral-800">
                                 <div>
                                   Q{pin.question}
-                                  {pin.text && <span className="ml-1 text-neutral-500">â€” {pin.text}</span>}
+                                  {pin.text && <span className="ml-1 text-neutral-500">— {pin.text}</span>}
                                 </div>
                                 {pin.screenshot && (
                                   <img
@@ -898,7 +898,7 @@ export default function App() {
                                 return a;
                               });
                             }}
-                          >âœ“</button>
+                          >?</button>
                           <button
                             className={cx(
                               "px-2 py-1 text-xs rounded-md ring-1",
@@ -1050,7 +1050,7 @@ export default function App() {
                       >
                         <div>
                           Q{item.question}
-                          {item.text && <span className="ml-1 text-neutral-500">â€” {item.text}</span>}
+                          {item.text && <span className="ml-1 text-neutral-500">— {item.text}</span>}
                         </div>
                         {item.screenshot && (
                           <img
@@ -1166,10 +1166,10 @@ export default function App() {
 
             {drillPool.length === 0 ? (
               <Card className="p-8 text-center text-neutral-400">
-                No wrong questions found for this subject. Mark some answers as wrong in <span className="text-neutral-200">Mark</span> and save to history.
+                No wrong questions with screenshots found for this subject. Mark some answers as wrong in <span className="text-neutral-200">Mark</span> and save to history.
               </Card>
             ) : currentDrill == null ? (
-              <Card className="p-8 text-center text-neutral-400">Preparing next cardâ€¦</Card>
+              <Card className="p-8 text-center text-neutral-400">Preparing next card…</Card>
             ) : (
               <Card className="p-5 space-y-4">
                 <div className="flex items-center justify-between">
@@ -1219,7 +1219,7 @@ export default function App() {
                     {currentDrill.correctChoice ? (
                       <div className="text-sm">
                         <span className="text-neutral-400">Your answer:</span> <span className="font-medium">{drillChoice ?? "-"}</span>
-                        <span className="mx-2 text-neutral-600">â€¢</span>
+                        <span className="mx-2 text-neutral-600">•</span>
                         <span className="text-neutral-400">Correct:</span> <span className="font-medium">{currentDrill.correctChoice}</span>
                       </div>
                     ) : (
@@ -1398,7 +1398,7 @@ function HeaderBlock({ title, subtitle }: { title: string; subtitle?: string }) 
 function Footer() {
   return (
     <footer className="border-t border-neutral-900/80 py-6 text-center text-xs text-neutral-500">
-      Built for focused practice â€¢ Data saved locally in your browser
+      Built for focused practice • Data saved locally in your browser
     </footer>
   );
 }
@@ -1615,7 +1615,7 @@ function HistoryAnalysisRow() {
                   {card.scoreSeries.length ? (
                     <>
                       <span>{card.avgScore}% avg</span>
-                      <span className="mx-1 text-neutral-700">â€¢</span>
+                      <span className="mx-1 text-neutral-700">•</span>
                       <span>{card.lastLabel ?? "n/a"}</span>
                     </>
                   ) : (
@@ -1778,7 +1778,7 @@ function HistoryView({
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  /* Rename controls (requested â€œfunction to rename sessions in historyâ€) */
+  /* Rename controls (requested “function to rename sessions in history”) */
   function startRename(s: SessionMeta) { setNameEdits((m) => ({ ...m, [s.id]: s.name })); }
   function cancelRename(s: SessionMeta) {
     setNameEdits((m) => { const { [s.id]: _, ...rest } = m; return rest; });
@@ -1826,7 +1826,7 @@ function HistoryView({
                       <SubjectBadge subject={s.subject} />
                     </div>
                     <div className="text-xs text-neutral-500">
-                      {new Date(s.startedAt).toLocaleString()} â€¢ Q{s.startNum}â€“{s.endNum} â€¢ {s.minutes} min
+                      {new Date(s.startedAt).toLocaleString()} • Q{s.startNum}–{s.endNum} • {s.minutes} min
                     </div>
                   </>
                 ) : (
