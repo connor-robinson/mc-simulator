@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState, } from "react";
+ï»¿import React, { useEffect, useMemo, useRef, useState, } from "react";
 
 import { PenLine, Notebook, ExternalLink, Trash2, Pin, PinOff } from "lucide-react";
 
-/* MCQ Simulator — TSX, Tailwind (dark, minimalist)
+/* MCQ Simulator ï¿½ TSX, Tailwind (dark, minimalist)
    Added per your requests:
    - Session category: math1 / math2 / physics
    - Setup: preview last two notes (Math = math1+math2 combined, Physics separate) with a toggle
@@ -306,6 +306,11 @@ export default function App() {
     });
     return Array.from(map.values()).filter((it) => it.subject === drillSubject && !!it.screenshot);
   }, [drillSubject, view]);
+
+  const reviewedStats = useMemo(() => {
+    const reviewed = drillPool.filter(it => !!drillState[it.key]?.lastReviewedAt).length;
+    return { reviewed, never: Math.max(0, drillPool.length - reviewed) };
+  }, [drillPool, drillState]);
 
   function pickNextDrillItem(): DrillItem | null {
     if (drillPool.length === 0) return null;
@@ -716,7 +721,7 @@ export default function App() {
                               <div key={`${pin.question}-${idx2}`} className="rounded-lg bg-neutral-950/80 p-2 text-xs text-neutral-300 ring-1 ring-neutral-800">
                                 <div>
                                   Q{pin.question}
-                                  {pin.text && <span className="ml-1 text-neutral-500">— {pin.text}</span>}
+                                  {pin.text && <span className="ml-1 text-neutral-500">ï¿½ {pin.text}</span>}
                                 </div>
                                 {pin.screenshot && (
                                   <img
@@ -1050,7 +1055,7 @@ export default function App() {
                       >
                         <div>
                           Q{item.question}
-                          {item.text && <span className="ml-1 text-neutral-500">— {item.text}</span>}
+                          {item.text && <span className="ml-1 text-neutral-500">ï¿½ {item.text}</span>}
                         </div>
                         {item.screenshot && (
                           <img
@@ -1148,19 +1153,37 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <div className="text-sm text-neutral-400">Subject</div>
                 <div className="flex gap-2">
-                  {(["math1","math2","physics"] as Subject[]).map((s) => (
+                  {(["math1", "math2", "physics"] as Subject[]).map((s) => (
                     <button
                       key={s}
                       onClick={() => setDrillSubject(s)}
                       className={cx(
                         "rounded-lg px-3 py-1 text-sm ring-1",
-                        drillSubject === s ? "bg-neutral-100 text-neutral-900 ring-neutral-200" : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
+                        drillSubject === s
+                          ? "bg-neutral-100 text-neutral-900 ring-neutral-200"
+                          : "bg-neutral-950 text-neutral-200 ring-neutral-800 hover:bg-neutral-900"
                       )}
                     >
                       {s.toUpperCase()}
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* NEW: reviewed stats row */}
+              <div className="mt-3 flex items-center gap-4 text-xs text-neutral-400">
+                <span>
+                  To review (never seen):{" "}
+                  <span className="text-neutral-200 font-medium">{reviewedStats.never}</span>
+                </span>
+                <span>
+                  Reviewed â‰¥1Ã—:{" "}
+                  <span className="text-neutral-200 font-medium">{reviewedStats.reviewed}</span>
+                </span>
+                <span className="ml-auto">
+                  Total in pool:{" "}
+                  <span className="text-neutral-200 font-medium">{drillPool.length}</span>
+                </span>
               </div>
             </Card>
 
@@ -1169,7 +1192,7 @@ export default function App() {
                 No wrong questions with screenshots found for this subject. Mark some answers as wrong in <span className="text-neutral-200">Mark</span> and save to history.
               </Card>
             ) : currentDrill == null ? (
-              <Card className="p-8 text-center text-neutral-400">Preparing next card…</Card>
+              <Card className="p-8 text-center text-neutral-400">Preparing next cardï¿½</Card>
             ) : (
               <Card className="p-5 space-y-4">
                 <div className="flex items-center justify-between">
@@ -1183,8 +1206,11 @@ export default function App() {
                 {(currentDrill.screenshot || currentDrill.explanation || currentDrill.other) && (
                   <div className="rounded-xl bg-neutral-950/70 p-3 ring-1 ring-neutral-900">
                     {currentDrill.screenshot && (
-                      <img src={currentDrill.screenshot} alt={`Q${currentDrill.question} screenshot`} className="max-h-64 w-full rounded-lg border border-neutral-800 object-contain" />
-                    )}
+                          <img
+                            src={currentDrill.screenshot}
+                            alt={`Q${currentDrill.question} screenshot`}
+                            className="w-full h-auto rounded-lg border border-neutral-800 object-contain"
+                          />)}
                     {currentDrill.explanation && (
                       <div className="mt-2 text-sm text-neutral-300 whitespace-pre-wrap">{currentDrill.explanation}</div>
                     )}
@@ -1219,7 +1245,7 @@ export default function App() {
                     {currentDrill.correctChoice ? (
                       <div className="text-sm">
                         <span className="text-neutral-400">Your answer:</span> <span className="font-medium">{drillChoice ?? "-"}</span>
-                        <span className="mx-2 text-neutral-600">•</span>
+                        <span className="mx-2 text-neutral-600">ï¿½</span>
                         <span className="text-neutral-400">Correct:</span> <span className="font-medium">{currentDrill.correctChoice}</span>
                       </div>
                     ) : (
@@ -1398,7 +1424,7 @@ function HeaderBlock({ title, subtitle }: { title: string; subtitle?: string }) 
 function Footer() {
   return (
     <footer className="border-t border-neutral-900/80 py-6 text-center text-xs text-neutral-500">
-      Built for focused practice • Data saved locally in your browser
+      Built for focused practice ï¿½ Data saved locally in your browser
     </footer>
   );
 }
@@ -1615,7 +1641,7 @@ function HistoryAnalysisRow() {
                   {card.scoreSeries.length ? (
                     <>
                       <span>{card.avgScore}% avg</span>
-                      <span className="mx-1 text-neutral-700">•</span>
+                      <span className="mx-1 text-neutral-700">ï¿½</span>
                       <span>{card.lastLabel ?? "n/a"}</span>
                     </>
                   ) : (
@@ -1778,7 +1804,7 @@ function HistoryView({
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  /* Rename controls (requested “function to rename sessions in history”) */
+  /* Rename controls (requested ï¿½function to rename sessions in historyï¿½) */
   function startRename(s: SessionMeta) { setNameEdits((m) => ({ ...m, [s.id]: s.name })); }
   function cancelRename(s: SessionMeta) {
     setNameEdits((m) => { const { [s.id]: _, ...rest } = m; return rest; });
@@ -1826,7 +1852,7 @@ function HistoryView({
                       <SubjectBadge subject={s.subject} />
                     </div>
                     <div className="text-xs text-neutral-500">
-                      {new Date(s.startedAt).toLocaleString()} • Q{s.startNum}–{s.endNum} • {s.minutes} min
+                      {new Date(s.startedAt).toLocaleString()} ï¿½ Q{s.startNum}ï¿½{s.endNum} ï¿½ {s.minutes} min
                     </div>
                   </>
                 ) : (
