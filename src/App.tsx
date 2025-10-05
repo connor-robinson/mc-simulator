@@ -1055,7 +1055,7 @@ export default function App() {
                       >
                         <div>
                           Q{item.question}
-                          {item.text && <span className="ml-1 text-neutral-500">� {item.text}</span>}
+                          {item.text && <span className="ml-1 text-neutral-500">,  {item.text}</span>}
                         </div>
                         {item.screenshot && (
                           <img
@@ -1852,7 +1852,7 @@ function HistoryView({
                       <SubjectBadge subject={s.subject} />
                     </div>
                     <div className="text-xs text-neutral-500">
-                      {new Date(s.startedAt).toLocaleString()} � Q{s.startNum}�{s.endNum} � {s.minutes} min
+                      {new Date(s.startedAt).toLocaleString()} , Q{s.startNum}-{s.endNum}: {s.minutes} min
                     </div>
                   </>
                 ) : (
