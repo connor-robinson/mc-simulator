@@ -1679,22 +1679,57 @@ function TrendChart({ series, labels }: { series: number[]; labels: string[] }) 
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
   if (!series.length) {
-    return <div className="h-[220px] rounded-xl border border-neutral-900 bg-neutral-950/50 text-xs text-neutral-500 flex items-center justify-center">No scored sessions yet.</div>;
+    return (
+      <div className="h-[220px] rounded-xl border border-neutral-900 bg-neutral-950/50 text-xs text-neutral-500 flex items-center justify-center">
+        No scored sessions yet.
+      </div>
+    );
   }
 
+  // Same outer size as before
   const width = 720;
   const height = 220;
-  const margin = { top: 20, right: 24, bottom: 32, left: 44 };
+  const margin = { top: 16, right: 20, bottom: 28, left: 40 };
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
-  const min = 0;
-  const max = 100;
 
+  // ------- Auto-zoom Y domain (monochrome, minimal) -------
+  // Nice step helper
+  const niceNumber = (x: number) => {
+    const exp = Math.floor(Math.log10(x || 1));
+    const f = x / Math.pow(10, exp);
+    const nf = f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10;
+    return nf * Math.pow(10, exp);
+  };
+
+  const sMin = Math.min(...series);
+  const sMax = Math.max(...series);
+  const rawRange = Math.max(2, sMax - sMin || 2);
+  const pad = Math.max(2, 0.1 * rawRange); // ~10% padding (min 2)
+  const yMin = Math.floor((sMin - pad) * 10) / 10;
+  const yMax = Math.ceil((sMax + pad) * 10) / 10;
+
+  // Build ~4 tidy ticks
+  const tickRange = yMax - yMin;
+  const tickStep = niceNumber(tickRange / 4);
+  const t0 = Math.ceil(yMin / tickStep) * tickStep;
+  const yTicks: number[] = [];
+  for (let t = t0; t <= yMax + 1e-9; t += tickStep) {
+    yTicks.push(Math.round(t * 10) / 10);
+  }
+
+  // ------- Scales -------
+  const xOf = (i: number) =>
+    margin.left + (series.length > 1 ? (i / Math.max(1, series.length - 1)) * innerWidth : innerWidth / 2);
+  const yOf = (v: number) => {
+    const r = (v - yMin) / Math.max(1e-9, yMax - yMin);
+    return margin.top + (1 - r) * innerHeight;
+  };
+
+  // ------- Points + path -------
   const points = series.map((value, index) => {
-    const x = margin.left + (series.length > 1 ? (index / Math.max(1, series.length - 1)) * innerWidth : innerWidth / 2);
-    const clamped = Math.max(min, Math.min(max, value));
-    const ratio = (clamped - min) / Math.max(1, max - min);
-    const y = margin.top + (1 - ratio) * innerHeight;
+    const x = xOf(index);
+    const y = yOf(value);
     return {
       x,
       y,
@@ -1705,63 +1740,105 @@ function TrendChart({ series, labels }: { series: number[]; labels: string[] }) 
   });
 
   const path = points.map((p, idx) => `${idx === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
-  const yTicks = [0, 25, 50, 75, 100];
-  const xTickIndexes = series.length <= 1
-    ? [0]
-    : series.length <= 4
+
+  // X ticks: first/mid/last (or all if ≤ 4)
+  const xTickIndexes =
+    series.length <= 1
+      ? [0]
+      : series.length <= 4
       ? Array.from({ length: series.length }, (_, idx) => idx)
       : Array.from(new Set([0, Math.floor((series.length - 1) / 2), series.length - 1]));
 
+  // Hover + pill sizing
   const hoveredPoint = hoverIndex != null ? points[hoverIndex] : null;
-  const tooltipX = hoveredPoint ? Math.min(hoveredPoint.x + 12, width - 150) : 0;
-  const tooltipY = hoveredPoint ? Math.max(hoveredPoint.y - 12, 40) : 0;
+  const pillWidth = 180;
+  const pillHeight = 44;
+  const pillX = hoveredPoint ? Math.min(hoveredPoint.x + 12, width - pillWidth - 8) : 0;
+  const pillY = hoveredPoint ? Math.max(hoveredPoint.y - pillHeight - 8, margin.top + 8) : 0;
+
+  // Last/first for under-area
+  const firstPt = points[0];
+  const lastPt = points[points.length - 1];
 
   return (
-    <svg className="w-full" viewBox={`0 0 ${width} ${height}`} role="img">
+    <svg className="w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Performance trend">
+      {/* Background */}
       <rect x={0} y={0} width={width} height={height} rx={16} fill="#0a0a0a" />
-      <line x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} stroke="#27272a" strokeWidth={1} />
-      <line x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} stroke="#27272a" strokeWidth={1} />
+
+      {/* Axes (monochrome, minimal) */}
+      <line x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} stroke="#2a2a2a" strokeWidth={1} />
+      <line x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} stroke="#2a2a2a" strokeWidth={1} />
+
+      {/* Y grid + labels (subtle, dashed) */}
       {yTicks.map((tick) => {
-        const ratio = (tick - min) / Math.max(1, max - min);
-        const y = margin.top + (1 - ratio) * innerHeight;
+        const y = yOf(tick);
         return (
           <g key={`y-${tick}`}>
-            <line x1={margin.left} y1={y} x2={width - margin.right} y2={y} stroke="#1f1f23" strokeWidth={0.5} />
-            <text x={margin.left - 8} y={y + 4} fill="#6b7280" fontSize={10} textAnchor="end">
-              {tick}%
+            <line x1={margin.left} y1={y} x2={width - margin.right} y2={y} stroke="#222" strokeWidth={0.5} strokeDasharray="2 4" />
+            <text x={margin.left - 8} y={y + 3} fill="#9ca3af" fontSize={10} textAnchor="end">
+              {tick}
             </text>
           </g>
         );
       })}
+
+      {/* X ticks (minimal) */}
       {xTickIndexes.map((idx) => {
-        const point = points[idx];
+        const p = points[idx];
         return (
-          <text key={`x-${idx}`} x={point.x} y={height - margin.bottom + 20} fill="#6b7280" fontSize={10} textAnchor="middle">
+          <text key={`x-${idx}`} x={p.x} y={height - margin.bottom + 18} fill="#9ca3af" fontSize={10} textAnchor="middle">
             {labels[idx] ?? `#${idx + 1}`}
           </text>
         );
       })}
-      <path d={path} fill="none" stroke="#38bdf8" strokeWidth={2} />
+
+      {/* Hover guide line */}
+      {hoveredPoint && (
+        <line
+          x1={hoveredPoint.x}
+          y1={margin.top}
+          x2={hoveredPoint.x}
+          y2={height - margin.bottom}
+          stroke="#3a3a3a"
+          strokeWidth={1}
+          opacity={0.6}
+        />
+      )}
+
+      {/* Subtle under-area (monochrome) */}
+      <path
+        d={`${path} L ${lastPt.x} ${height - margin.bottom} L ${firstPt.x} ${height - margin.bottom} Z`}
+        fill="#1a1a1a"
+        opacity={0.4}
+      />
+
+      {/* Line (monochrome) */}
+      <path d={path} fill="none" stroke="#e5e7eb" strokeWidth={2} />
+
+      {/* Points */}
       {points.map((p, idx) => (
         <circle
           key={`pt-${idx}`}
           cx={p.x}
           cy={p.y}
-          r={hoverIndex === idx ? 5 : 4}
-          fill={hoverIndex === idx ? "#38bdf8" : "#f8fafc"}
-          stroke="#0f172a"
+          r={hoverIndex === idx ? 6 : 4.5}
+          fill={hoverIndex === idx ? "#e5e7eb" : "#d1d5db"}
+          stroke="#0b0b0b"
           strokeWidth={1}
           onMouseEnter={() => setHoverIndex(idx)}
           onMouseLeave={() => setHoverIndex(null)}
         />
       ))}
+
+      {/* Tooltip pill (bigger, monochrome) */}
       {hoveredPoint && (
-        <g transform={`translate(${tooltipX} ${tooltipY})`}>
-          <rect x={0} y={-28} width={140} height={32} rx={8} fill="#111827" stroke="#1f2937" strokeWidth={1} />
-          <text x={8} y={-12} fill="#e5e7eb" fontSize={11}>
-            Score: {hoveredPoint.value}%
+        <g transform={`translate(${pillX} ${pillY})`}>
+          <rect x={0} y={0} width={pillWidth} height={pillHeight} rx={10} fill="#0f1115" stroke="#1f2937" strokeWidth={1} />
+          <text x={12} y={18} fill="#e5e7eb" fontSize={12} style={{ fontWeight: 600 }}>
+            {hoveredPoint.value}
+            {typeof hoveredPoint.value === "number" ? "%" : ""}
           </text>
-          <text x={8} y={2} fill="#9ca3af" fontSize={10}>
+          <text x={12} y={32} fill="#9ca3af" fontSize={11}>
             {hoveredPoint.label}
           </text>
         </g>
@@ -1769,6 +1846,7 @@ function TrendChart({ series, labels }: { series: number[]; labels: string[] }) 
     </svg>
   );
 }
+
 function TrendPill({ series }: { series: number[] }) {
   if (!series.length) return <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-xs text-neutral-400">no data</span>;
   const last = series[series.length - 1];
